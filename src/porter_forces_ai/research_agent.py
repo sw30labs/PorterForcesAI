@@ -17,7 +17,7 @@ Analyze exactly one assigned Porter force. First state causal hypotheses in the
 form driver -> force effect -> economic mechanism -> organization exposure ->
 observable signal. Use the public-search tool only for sanitized public queries.
 
-Issue exactly one parallel search batch containing three to five distinct focused
+Issue exactly one parallel search batch containing up to five distinct focused
 queries. After that batch returns, do not search again: immediately synthesize
 the ResearchBundle from the observed results. An empty result is a valid finding;
 record the gap instead of broadening or repeating the query.
@@ -124,13 +124,14 @@ def _research_tool_boundary_middleware() -> Any:
 def _single_search_batch_middleware() -> Any:
     """After one completed search batch, force the typed final response.
 
-    The tool-call limiter is the hard network cap. This middleware removes the
-    search schema after any successful search result and forces the remaining
+    The tool-call limiter is the hard logical-search cap. This middleware removes
+    the search schema after any successful search result and forces the remaining
     ``ResearchBundle`` tool, preventing a compliant model from spending local
     inference calls asking to broaden the same assignment.
     """
 
     from langchain.agents.middleware import AgentMiddleware
+
     def final_request(request: Any) -> Any:
         completed_search = _has_successful_search_result(request.messages)
         if not completed_search:

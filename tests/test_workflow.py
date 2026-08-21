@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -30,6 +31,11 @@ from porter_forces_ai.domain import (
     StrategicOption,
     Trend,
 )
+from porter_forces_ai.economics import (
+    CostOfDelayResult,
+    RangeEstimate,
+    ScenarioEconomicsResult,
+)
 from porter_forces_ai.egress import EgressPolicy, EgressViolation
 from porter_forces_ai.quality import QualityReport
 from porter_forces_ai.workflow import build_workflow
@@ -40,6 +46,9 @@ class FakeRuntime:
         self.researched: list[ForceName] = []
         self.research_assignments: list[PublicResearchAssignment] = []
         self.assessed: list[ForceName] = []
+        self.composed_economics: list[ScenarioEconomicsResult] = []
+        self.composed_cost_of_delay: CostOfDelayResult | None = None
+        self.challenged_economics: list[ScenarioEconomicsResult] = []
 
     def frame_decision(self, request: DecisionRequest) -> DecisionFrame:
         return DecisionFrame(
@@ -94,6 +103,7 @@ class FakeRuntime:
                     url=f"https://example.com/{suffix}",
                     title="Test source",
                     why_relevant="Supports the test mechanism",
+                    query_id=f"Q-{suffix}",
                 )
             ],
         )
@@ -127,7 +137,9 @@ class FakeRuntime:
             claims.append(
                 Claim(
                     claim_id=claim_id,
-                    statement=f"Test inference for {suffix}",
+                    statement=(
+                        f"A traceable fixture statement supports the test inference for {suffix}"
+                    ),
                     kind=ClaimKind.INFERENCE,
                     evidence_ids=[evidence_id],
                     confidence=0.6,
@@ -138,6 +150,7 @@ class FakeRuntime:
                     claim_id=claim_id,
                     evidence_id=evidence_id,
                     stance=EvidenceStance.SUPPORTS,
+                    supporting_quote="A traceable fixture statement.",
                     entailment_score=1,
                     rationale="Fixture explicitly supports its test claim",
                 )
@@ -181,7 +194,12 @@ class FakeRuntime:
         frame: DecisionFrame,
         ledger: EvidenceLedger,
         assessments: list[ForceAssessment],
+        scenario_economics: list[ScenarioEconomicsResult],
+        cost_of_delay: CostOfDelayResult | None,
     ) -> BoardBrief:
+        self.composed_economics = scenario_economics
+        self.composed_cost_of_delay = cost_of_delay
+
         def option(name: str) -> StrategicOption:
             return StrategicOption(
                 name=name,
@@ -243,7 +261,11 @@ class FakeRuntime:
         frame: DecisionFrame,
         ledger: EvidenceLedger,
         brief: BoardBrief,
+        scenario_economics: list[ScenarioEconomicsResult],
+        cost_of_delay: CostOfDelayResult | None,
     ) -> ChallengeReport:
+        self.challenged_economics = scenario_economics
+        assert cost_of_delay is self.composed_cost_of_delay
         return ChallengeReport(
             strongest_counterargument="The evidence may justify waiting.",
             premortem=["Benefits never become booked savings"],
@@ -277,11 +299,39 @@ def test_graph_dispatches_and_reduces_exactly_five_forces() -> None:
         restricted_terms=["Project Cedar"],
         internal_context={"program": "Project Cedar", "benefit_target": "$420 million"},
     )
+    scenario = ScenarioEconomicsResult(
+        scenario_name="Controlled deployment",
+        currency="USD",
+        npv=RangeEstimate(
+            low=Decimal("-10"),
+            base=Decimal("5"),
+            high=Decimal("20"),
+            unit="USD",
+            basis_ids=["A-finance"],
+        ),
+        undiscounted_roi=None,
+        base_discounted_payback_month=None,
+        formulas=["calculator-owned test formula"],
+    )
+    delay = CostOfDelayResult(
+        currency="USD",
+        period_months=18,
+        cost_of_delay=RangeEstimate(
+            low=Decimal("1"),
+            base=Decimal("2"),
+            high=Decimal("3"),
+            unit="USD",
+            basis_ids=["A-finance"],
+        ),
+        formula="calculator-owned delay formula",
+    )
     result = graph.invoke(
         {
             "request": request,
             "research_bundles": [],
             "force_assessments": [],
+            "scenario_economics": [scenario],
+            "cost_of_delay": delay,
         },
         {"configurable": {"thread_id": "test-run"}, "max_concurrency": 2},
     )
@@ -290,6 +340,10 @@ def test_graph_dispatches_and_reduces_exactly_five_forces() -> None:
     assert set(runtime.assessed) == set(FORCE_ORDER)
     assert len(result["research_bundles"]) == 5
     assert len(result["force_assessments"]) == 5
+    assert runtime.composed_economics == runtime.challenged_economics == [scenario]
+    assert runtime.composed_cost_of_delay == delay
+    assert result["scenario_economics"] == [scenario]
+    assert result["cost_of_delay"] == delay
     assert result["quality_report"].draft_valid is True
     assert result["quality_report"].publishable is False
     assert all(

@@ -25,6 +25,7 @@ from porter_forces_ai.domain import (
     PublicResearchAssignment,
     ResearchBundle,
 )
+from porter_forces_ai.economics import CostOfDelayResult, ScenarioEconomicsResult
 from porter_forces_ai.egress import EgressPolicy, EgressViolation
 from porter_forces_ai.quality import QualityReport, evaluate_brief
 
@@ -51,6 +52,8 @@ class AnalysisState(TypedDict, total=False):
     research_bundles: Annotated[list[ResearchBundle], operator.add]
     ledger: EvidenceLedger
     force_assessments: Annotated[list[ForceAssessment], operator.add]
+    scenario_economics: list[ScenarioEconomicsResult]
+    cost_of_delay: CostOfDelayResult | None
     board_brief: BoardBrief
     challenge_report: ChallengeReport
     quality_report: QualityReport
@@ -89,6 +92,8 @@ class AdvisorRuntime(Protocol):
         frame: DecisionFrame,
         ledger: EvidenceLedger,
         assessments: list[ForceAssessment],
+        scenario_economics: list[ScenarioEconomicsResult],
+        cost_of_delay: CostOfDelayResult | None,
     ) -> BoardBrief: ...
 
     def challenge(
@@ -97,6 +102,8 @@ class AdvisorRuntime(Protocol):
         frame: DecisionFrame,
         ledger: EvidenceLedger,
         brief: BoardBrief,
+        scenario_economics: list[ScenarioEconomicsResult],
+        cost_of_delay: CostOfDelayResult | None,
     ) -> ChallengeReport: ...
 
     def revise_board_brief(
@@ -230,6 +237,8 @@ def build_workflow(
                 state["decision_frame"],
                 state["ledger"],
                 ordered,
+                state.get("scenario_economics", []),
+                state.get("cost_of_delay"),
             )
         }
 
@@ -240,6 +249,8 @@ def build_workflow(
                 state["decision_frame"],
                 state["ledger"],
                 state["board_brief"],
+                state.get("scenario_economics", []),
+                state.get("cost_of_delay"),
             )
         }
 

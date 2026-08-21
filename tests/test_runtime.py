@@ -1,10 +1,13 @@
+from decimal import Decimal
+
 from porter_forces_ai.domain import (
     FORCE_ORDER,
     DecisionRequest,
     EvidenceOrigin,
     OrganizationArchetype,
 )
-from porter_forces_ai.runtime import DeterministicDemoRuntime
+from porter_forces_ai.economics import RangeEstimate, ScenarioEconomicsResult
+from porter_forces_ai.runtime import DeterministicDemoRuntime, OmlxAdvisorRuntime
 from porter_forces_ai.workflow import build_workflow
 
 
@@ -59,3 +62,112 @@ def test_demo_runtime_is_deterministic_except_for_timestamp() -> None:
 
     assert first_brief == second["board_brief"]
 
+
+def test_demo_runtime_declines_scale_when_owned_economics_are_wholly_negative() -> None:
+    negative = ScenarioEconomicsResult(
+        scenario_name="Controlled workflow deployment",
+        currency="USD",
+        npv=RangeEstimate(
+            low=Decimal("-50000000"),
+            base=Decimal("-30000000"),
+            high=Decimal("-10000000"),
+            unit="USD",
+            basis_ids=["FINANCE-OWNED-NEGATIVE-CASE"],
+        ),
+        undiscounted_roi=RangeEstimate(
+            low=Decimal("-0.8"),
+            base=Decimal("-0.5"),
+            high=Decimal("-0.2"),
+            unit="ratio",
+            basis_ids=["FINANCE-OWNED-NEGATIVE-CASE"],
+        ),
+        base_discounted_payback_month=None,
+        formulas=["Finance-owned deterministic test fixture"],
+    )
+    result = build_workflow(DeterministicDemoRuntime()).invoke(
+        {
+            "request": _request(),
+            "research_bundles": [],
+            "force_assessments": [],
+            "scenario_economics": [negative],
+            "cost_of_delay": None,
+        }
+    )
+
+    brief = result["board_brief"]
+    assert "wholly negative" in brief.recommendation.text.casefold()
+    assert "do not scale" in brief.recommendation.text.casefold()
+    assert "no production deployment" in brief.smallest_sensible_commitment.text.casefold()
+    assert all(
+        option.economic_attractiveness <= 2
+        for option in brief.options
+        if "no action" not in option.name.casefold()
+    )
+
+
+def test_omlx_compose_and_challenge_prompts_receive_owned_economics() -> None:
+    negative = ScenarioEconomicsResult(
+        scenario_name="Controlled workflow deployment",
+        currency="USD",
+        npv=RangeEstimate(
+            low=Decimal("-50"),
+            base=Decimal("-30"),
+            high=Decimal("-10"),
+            unit="USD",
+            basis_ids=["FINANCE-OWNED-PROMPT-CASE"],
+        ),
+        undiscounted_roi=None,
+        base_discounted_payback_month=None,
+        formulas=["Finance-owned deterministic test fixture"],
+    )
+    graph_result = build_workflow(DeterministicDemoRuntime()).invoke(
+        {
+            "request": _request(),
+            "research_bundles": [],
+            "force_assessments": [],
+            "scenario_economics": [negative],
+            "cost_of_delay": None,
+        }
+    )
+
+    class CapturingRuntime(OmlxAdvisorRuntime):
+        def __init__(self) -> None:
+            super().__init__(
+                model=object(),
+                search=object(),  # type: ignore[arg-type]
+                run_id="run-demo-ai-adoption",
+            )
+            self.responses = [
+                graph_result["board_brief"],
+                graph_result["challenge_report"],
+            ]
+            self.prompts: list[tuple[str, str]] = []
+
+        def _structured(self, schema: object, system: str, payload: str) -> object:
+            del schema
+            self.prompts.append((system, payload))
+            return self.responses.pop(0)
+
+    runtime = CapturingRuntime()
+    brief = runtime.compose_board_brief(
+        _request(),
+        graph_result["decision_frame"],
+        graph_result["ledger"],
+        graph_result["force_assessments"],
+        [negative],
+        None,
+    )
+    runtime.challenge(
+        _request(),
+        graph_result["decision_frame"],
+        graph_result["ledger"],
+        brief,
+        [negative],
+        None,
+    )
+
+    compose_text = " ".join(runtime.prompts[0])
+    challenge_text = " ".join(runtime.prompts[1])
+    assert "Every supplied scenario has negative NPV" in compose_text
+    assert '"scenario_name": "Controlled workflow deployment"' in compose_text
+    assert "finance-owned NPV, ROI, payback" in challenge_text

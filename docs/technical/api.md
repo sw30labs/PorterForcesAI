@@ -23,6 +23,11 @@ hosts, and allows CORS only from the configured loopback UI origin.
 - Startup marks runs left in `created`, `acquiring_evidence`, or `verifying` as
   failed and closes their open attempts. Checkpoints are durable audit records;
   this release does not resume an interrupted model or network call.
+- Exactly one writable `AnalysisService` may own a database at a time. A
+  process-local registry and POSIX advisory lock reject a second API, CLI
+  analysis, or supported service writer before migration or recovery begins.
+  Read-only `runs`/`show` inspection remains available while that writer is
+  active.
 - FastAPI validation errors use its standard `detail` structure. Application
   state conflicts use a short, sanitized `detail` string.
 
@@ -284,8 +289,11 @@ artifact on detail access.
 Returns a polling projection. While queued or starting, only job fields are
 available. A completed result adds `details`, which is the serialized
 `AnalysisResult` containing decision frame, research bundles, evidence ledger,
-force assessments, board brief, challenge, quality, Ralph state, economics, and
-artifact metadata.
+force assessments, board brief, challenge, quality, Ralph state, economics,
+artifact metadata, immutable approval decisions, and the current
+`human_approval` projection. The projection keeps the original Ralph
+attempt-time outcome under `attempt_outcome` and reports the post-decision
+outcome separately; human review never rewrites a completed attempt report.
 
 ```json
 {
@@ -383,6 +391,15 @@ a valid draft produce `publishable`. A rejection of the exact current brief
 changes the run to `blocked`; a new reviewed content revision/run is required.
 Changing the brief invalidates prior publication authority while retaining stale
 records for audit.
+
+Each accepted decision commits one outer SQLite transaction containing the
+immutable approval, updated goal projection, approval-time quality report, a new
+board-memo revision, a new `analysis_result_revision`, and the resulting run
+status. The public board-memo download always resolves to the newest
+hash-verified revision, so a memo shown after the fourth approval states that
+approval is complete. The original machine-produced result and memo remain
+append-only audit artifacts. The conventional local memo file is refreshed only
+after commit and is not the API authority.
 
 `POST /api/analyses/{run_id}/approvals` is a hidden compatibility alias.
 

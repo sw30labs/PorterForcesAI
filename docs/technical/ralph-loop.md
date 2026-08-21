@@ -208,9 +208,13 @@ retry. It is reachable only when no required criterion is `fail`. In the
 implemented publication flow it means that an otherwise machine-valid exact
 brief still lacks one or more Strategy, Finance, Technology, or Risk approvals.
 Approvals are appended outside generation and recompute the publication gate for
-that same immutable brief. A rejection blocks the current revision and requires
-a new content revision/run; it is never treated as an automated writing
-instruction.
+that same immutable brief. They do not rewrite the latest `GoalReport` or its
+attempt manifest. Instead, `AnalysisResult.human_approval` is a current
+post-human-gate projection whose `attempt_outcome` points back to the immutable
+Ralph result. Every approval transaction appends a new result and board-memo
+revision, and the newest verified revision becomes the read model. A rejection
+blocks the current revision and requires a new content revision/run; it is never
+treated as an automated writing instruction.
 
 Ambiguous live scope and acquisition/model failures fail explicitly rather than
 masquerading as human pauses. Missing finance inputs remain visibly missing and

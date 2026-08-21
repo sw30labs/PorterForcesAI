@@ -88,10 +88,13 @@ Crossing from Zone 4 back to Zone 2 is the principal content-integrity boundary.
   `PublicResearchAssignment`; the egress policy rejects matching queries.
 - Public queries have length bounds. Search explicitly selects the DuckDuckGo
   backend and has no hidden provider fallback.
-- DDGS's exact no-results sentinel is treated as an empty result. A
-  recency-filtered empty result gets one unfiltered retry on that same backend;
-  timeouts, rate limits, and other provider errors fail closed rather than being
-  confused with empty evidence.
+- The adapter retains the installed DuckDuckGo engine's HTTP status instead of
+  relying on DDGS's ambiguous no-results exception. Only an HTTP 200 page with a
+  recognized no-results DOM class is empty discovery. A recency-filtered verified
+  empty result gets one unfiltered retry on that same backend. Unrecognized
+  layouts, challenges, non-200 responses, blank/malformed pages, timeouts, rate
+  limits, and ambiguous sentinels fail closed; response bodies are not included
+  in adapter errors.
 - Remote model endpoints are rejected unless
   `PFA_ALLOW_REMOTE_MODEL_ENDPOINT=true`; non-loopback remote endpoints also
   require HTTPS.
@@ -192,15 +195,28 @@ model with no tools.
 - Repository insertion verifies an approval's run, artifact, and exact SHA-256.
 - Quality evaluation ignores stale approvals and blocks publication when any
   required role is missing or a current reviewer rejected.
+- Each approval transaction appends the decision plus quality/memo/result
+  revisions, then updates the current goal projection and status. Attempt-time
+  Ralph output remains immutable and is shown separately from the current human
+  gate.
 - During live acquisition the decision frame is checkpointed first. Each
   successful search execution/hit set is committed before its tool result
   returns; the completed force bundle is checkpointed afterward; successful
   captures are appended as they complete. Each completed Ralph step stores its
   manifest, goal rows, and an immutable checkpoint before the next retry.
+- A supported writer acquires both an in-process registration and a mode-`0600`
+  POSIX advisory lock before migrations, recovery, or writes. This prevents a
+  second cooperating process from declaring active work interrupted. Read-only
+  inspection uses SQLite `mode=ro`/`query_only` and does not take the lease.
 
 SHA-256 records are tamper-evident only relative to the local database and
 application. They are not digital signatures. An administrator able to replace
 both can forge history.
+
+The writer lease is cooperative, not an authorization boundary: a hostile or
+direct SQLite process can ignore it. Operating-system account isolation and file
+permissions remain required. The retained `.writer.lock` sidecar is not secret
+and its presence alone says nothing about current ownership.
 
 The application does not encrypt the database, artifact files, WAL/SHM
 sidecars, backups, or `.env`. These may contain confidential context, captured

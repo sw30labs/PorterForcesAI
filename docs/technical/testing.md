@@ -34,7 +34,7 @@ profile or release is declared qualified.
 | Quality gate              | Canonical claims, exact quote locators, lexical alignment, evidence utility, assumptions, and content-bound approvals    | None                          |
 | Inner LangGraph           | Five-force fan-out/fan-in, ordering, scope failure, one bounded repair, and checkpoint reset                            | Fake runtime                  |
 | Ralph                     | Strict criteria, fresh threads, snapshot invariance, pass/retry/pause/block routes, budget, attempts, and stall         | Fake analysis/evaluator       |
-| Repository                | Migrations, WAL/FK health, transactions, append-only triggers, lineage, hash checks, and conflicts                      | Temporary SQLite              |
+| Repository                | Migrations, WAL/FK health, transactions, append-only triggers, lineage, hashes, read-only mode, and writer leases       | Temporary SQLite/subprocess   |
 | Runtime                   | Complete deterministic demo and structured oMLX contract boundaries                                                     | Demo or fake model/search     |
 | API                       | Endpoint schemas, async lifecycle, recursive redaction, recovery, immutable downloads, approvals, and local controls    | In-process ASGI client        |
 | UI                        | Production build, server rendering, navigation/content smoke checks, responsive and accessible visual review            | Local UI server/browser       |
@@ -104,8 +104,10 @@ Required automated cases are:
 10. audience coverage, exact request/market fidelity, canonical counterevidence,
     and conditional economics behavior;
 11. service persistence of each completed attempt before retry and fail-closed
-    startup recovery; and
-12. compiled LangGraph meta-loop behavior.
+    startup recovery of every nonterminal row;
+12. same-process/subprocess single-writer exclusion, cleanup after normal and
+    exceptional close, and concurrent read-only inspection; and
+13. compiled LangGraph meta-loop behavior.
 
 ## Evidence-security matrix
 
@@ -135,11 +137,14 @@ The quote/alignment cases are deliberately scoped. Passing them does not prove
 semantic entailment or source truth; a human reviewer must evaluate meaning,
 authority, context, and applicability.
 
-DuckDuckGo adapter tests separately distinguish discovery absence from outage:
-the exact DDGS no-results sentinel and an empty list are successful empty sets;
-a filtered empty result gets one same-provider unfiltered retry and records the
-relaxed filter; an unfiltered empty result returns immediately; timeout,
-rate-limit, and other provider errors raise `SearchUnavailableError`.
+DuckDuckGo adapter tests separately distinguish discovery absence from outage.
+An HTTP 200 page with a recognized no-results DOM class is a successful empty
+set; a filtered verified-empty result gets one same-provider unfiltered retry
+and records the relaxed filter. Deterministic fixtures prove that unrelated or
+layout-changed HTTP 200 pages, HTTP 202, 403, 429, 5xx, challenge pages,
+timeouts, and DDGS's ambiguous no-results sentinel raise
+`SearchUnavailableError` without response-body disclosure. The same boundary
+is exercised through the asynchronous port.
 
 Research-agent/runtime tests prove the five-search cap can return limit errors
 without preventing typed bundle synthesis, and that force-scoped lineage is
@@ -191,9 +196,13 @@ For every endpoint, test success and failure shapes. Especially verify:
 - partial approvals retain `human_required`;
 - a rejection changes the current revision to `blocked` and prevents publication;
 - all four current approvals allow `publishable` only when `draft_valid` is true;
+- each decision atomically creates a memo/result revision, restart hydrates the
+  newest current human-gate projection, and concurrent decisions cannot expose
+  an older cached memo as current;
 - secrets and internal context are absent from health, dashboard, settings,
   errors, routine summaries, and every nested run-detail/Ralph projection;
-- startup fails abandoned nonterminal runs and closes open attempts;
+- startup under the exclusive writer lease fails all abandoned nonterminal runs
+  and closes open attempts, including sets larger than presentation pagination;
 - only board-memo and evidence-register downloads are available, and their
   content comes from hash-verified immutable SQLite payloads;
 - non-local Host/Origin values fail in the standard local profile.

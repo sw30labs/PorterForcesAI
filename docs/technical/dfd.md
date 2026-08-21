@@ -208,15 +208,18 @@ sequenceDiagram
     participant Q as Quality gate
     participant R as Reviewer
     participant DB as SQLite repository
+    participant API as Local API read model
 
     S->>Q: BoardBrief plus canonical ledger
     Q-->>S: draft_valid and findings
     S->>DB: Store brief and SHA-256 fingerprint
     S-->>R: Display exact revision and evidence
     R->>S: role, reviewer, approve or reject, fingerprint
-    S->>DB: Append immutable approval record
     S->>Q: Re-evaluate with all approvals
     Q-->>S: publishable only if draft valid, all roles approve, no current rejection
+    S->>DB: Append approval/quality/memo/result revisions<br/>Update current goal projection and status
+    DB-->>API: Newest hash-verified memo and result revision
+    Note over S,DB: Completed Ralph attempt report remains immutable<br/>Current human state is a separate projection
     Note over S,Q: Any brief change creates a new fingerprint and makes prior approvals stale
 ```
 
@@ -227,15 +230,16 @@ flowchart TD
     OP[Operation] --> F{Failure type}
     F -->|ambiguous scope| HUMAN[Fail closed; clarify and start a new run]
     F -->|egress violation| DENY[Reject without network call]
-    F -->|filtered DuckDuckGo no-results| RELAX[One same-provider unfiltered retry]
-    F -->|unfiltered no-results| EMPTY[Successful empty discovery set]
-    F -->|timeout, rate limit, or provider error| SEARCHFAIL[Fail closed as search unavailable]
+    F -->|HTTP 200 plus explicit empty DOM marker, filtered| RELAX[One same-provider unfiltered retry]
+    F -->|HTTP 200 plus explicit empty DOM marker, unfiltered| EMPTY[Successful empty discovery set]
+    F -->|unknown layout, challenge, non-200, timeout, or malformed response| SEARCHFAIL[Fail closed as search unavailable]
     F -->|unsafe source| QUAR[Reject source and record gap]
     F -->|model schema failure| CONTRACT[Runtime contract error]
     F -->|quality defect| REPAIR[One local repair then Ralph evaluation]
     F -->|same Ralph gap repeats| STALL[Blocked by stall limit]
     F -->|missing publication approval| PAUSE[Human required]
     F -->|reviewer rejection| BLOCKED[Blocked; new revision required]
+    F -->|second supported writer| LEASE[Reject before migration or startup recovery]
     F -->|process interrupted| RECOVER[Startup marks run failed and closes open attempt]
     F -->|missing finance input| DISCLOSE[Disclose missing input; never invent it]
 ```

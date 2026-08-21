@@ -322,11 +322,20 @@ API downloads only the memo and evidence register, reconstructed from immutable,
 hash-verified SQLite payloads. The richer audit sidecar stays on the protected
 local filesystem.
 
+The supported local topology has one writable `AnalysisService` per database.
+It acquires a same-process registration and a non-blocking POSIX advisory lock
+before migrations or recovery. A second API/CLI writer fails closed; SQLite
+read-only `runs`/`show` projections remain usable while the writer is active.
+Every approval transaction appends the approval and quality/memo/result
+revisions, then updates the current goal projection and status without rewriting
+the completed Ralph attempt.
+
 The service does not use a live graph checkpointer as a computation-resume
 mechanism. A fresh graph attempt explicitly replaces reducer-backed fan-in
 fields and receives a new thread ID. API startup changes abandoned `created`,
 `acquiring_evidence`, and `verifying` runs to `failed`, closes open attempts, and
-appends a failure artifact. The persisted checkpoint supports audit and failure
+appends a failure artifact. Recovery scans all nonterminal rows only after the
+writer lease is held. The persisted checkpoint supports audit and failure
 diagnosis; it does not continue a partly completed model or network call.
 
 SQLite, WAL/SHM files, `.env`, and rendered artifacts are local plaintext. An
@@ -355,10 +364,15 @@ current evidence and must not substantiate a board-visible factual claim.
 The current `ddgs` package is a third-party metasearch library. The adapter sets
 `backend="duckduckgo"` explicitly because the default `auto` mode can use other
 engines. A result title and snippet become `SearchHit` discovery metadata only.
-The exact DDGS no-results sentinel is a successful empty result. A filtered empty
-query gets one unfiltered retry against that same backend and records the
-effective relaxed filter; unfiltered emptiness stays empty. Timeout, rate-limit,
-and other provider exceptions fail closed.
+The adapter retains the installed DuckDuckGo engine's HTTP status rather than
+trusting DDGS's ambiguous no-results sentinel. Only an HTTP 200 page with a
+recognized no-results DOM class is successful empty discovery. A filtered
+verified-empty query gets one unfiltered retry against that same backend and
+records the effective relaxed filter; unfiltered verified emptiness stays empty.
+Unrecognized layouts, challenges, non-200 responses, malformed pages, timeouts,
+rate limits, and ambiguous sentinels fail closed without exposing provider
+response bodies. The private engine integration is dependency-pinned and guarded
+for its required members.
 
 A source can be promoted to `EvidenceItem` only after the application:
 

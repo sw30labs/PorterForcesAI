@@ -56,7 +56,8 @@ sequenceDiagram
     O->>M: Start approved model server on loopback
     O->>O: Run model inventory and live canary
     O->>A: Start local Python API
-    A->>A: Apply migrations and fail abandoned nonterminal runs closed
+    A->>A: Acquire exclusive writer lease
+    A->>A: Apply migrations and fail every abandoned nonterminal run closed
     A->>A: Check SQLite health
     O->>U: Start local UI
     O->>B: Open emitted loopback URL
@@ -211,6 +212,12 @@ A rejection blocks that exact revision. The implementation does not ask Ralph
 to rewrite a brief to simulate consent; commission a new revision/run after the
 review comment is resolved.
 
+Each recorded decision creates a new immutable memo/result revision and a
+separate current `human_approval` projection; it does not rewrite the completed
+Ralph attempt. The API serves the newest verified memo revision, including the
+current missing roles or completed gate. The local `board-brief.md` is refreshed
+after commit only as a convenience mirror.
+
 Finance must own economic assumptions. Risk/legal approval is not delegated to
 the model or inferred from a high quality score.
 
@@ -241,6 +248,20 @@ The defaults are `data/porter-forces.db` and `runs/<run-id>/`. Override them
 with `PFA_DATABASE_PATH` and `PFA_ARTIFACTS_DIR` before startup when the
 workstation policy requires an encrypted or access-controlled location.
 
+### Writer ownership
+
+Run one writable API or analysis CLI process per database. The service acquires
+a same-process registration and non-blocking POSIX advisory lock on
+`<database>.writer.lock` before migration or startup recovery. A second supported
+writer exits with a lease conflict; do not retry it in a tight loop. `porter-forces
+runs` and `porter-forces show` use true SQLite read-only mode and remain safe for
+inspection while the API is active.
+
+The lock sidecar is intentionally retained after shutdown to avoid inode races.
+Its existence does not indicate a live writer, so do not delete it as a recovery
+step. Verify the owning process and use normal shutdown. Direct SQLite writers
+do not participate in this advisory protocol and are unsupported.
+
 ### Backup
 
 Stop or quiesce the API, then use SQLite's backup operation rather than copying
@@ -258,8 +279,9 @@ public text; protect it accordingly.
 
 1. preserve the failed database, WAL, logs, and artifacts read-only;
 2. restore the database and artifacts together;
-3. start the API on loopback;
-4. review any runs startup changed to `failed` with an
+3. confirm no other writable service owns the database, then start the API on
+   loopback;
+4. review every run startup changed to `failed` with an
    `InterruptedRunError`; do not relabel them complete;
 5. verify repository health and table counts;
 6. download a sample memo/register so its persisted hash is recomputed;
@@ -308,11 +330,14 @@ source bodies, or entire briefs by default.
 ### DuckDuckGo is unavailable
 
 - Confirm approved public egress and DNS.
-- An exact DDGS `No results found` condition is not an outage. A filtered search
-  receives one same-provider unfiltered retry; an unfiltered search may
+- Only an HTTP 200 DuckDuckGo page with a recognized no-results DOM class is
+  accepted as no hits. A filtered verified-empty search receives one
+  same-provider unfiltered retry; an unfiltered verified-empty search may
   truthfully return no hits.
-- Timeout, rate-limit, and other provider exceptions fail closed. Respect rate
-  limits; do not switch providers silently.
+- Unrecognized layouts, HTTP 202 challenge responses, 403, 429, 5xx, recognized
+  challenge pages, blank/malformed pages, timeouts, and the ambiguous DDGS
+  `No results found` sentinel fail closed. Respect rate limits; do not switch
+  providers silently or log provider response bodies.
 - Use demo mode or end the live run with a visible research gap.
 
 ### Source capture rejects a page
@@ -356,8 +381,8 @@ The API shutdown drains the active worker and cancels work that has not started.
 The single-worker queue is process memory; a queued request that has not created
 its repository run is not recoverable after shutdown or crash.
 After an unclean stop, the next API startup records interrupted nonterminal runs
-as failed. Preserve blocked, human-required, and failed history; do not delete
-incomplete runs.
+as failed after acquiring exclusive writer ownership. Preserve blocked,
+human-required, and failed history; do not delete incomplete runs.
 
 ## Production-readiness gate
 

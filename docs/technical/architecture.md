@@ -36,6 +36,10 @@ It is not an autonomous financial, legal, regulatory, or investment adviser.
    provenance is committed as it occurs and every completed Ralph attempt has a
    durable manifest. Startup marks interrupted nonterminal work failed; it does
    not resume a half-finished model or network call.
+9. **One supported writer owns recovery.** A same-process registration and
+   cross-process POSIX advisory lock are acquired before migration or recovery.
+   Read-only projections remain concurrent; a second supported writer fails
+   closed.
 
 ## Component view
 
@@ -235,11 +239,16 @@ extract PDF, office-document, image, or JavaScript-rendered source content. A
 rejected PDF remains an evidence gap until a separately sandboxed extractor is
 designed and approved.
 
-The DuckDuckGo adapter treats DDGS's exact `No results found` exception as a
-successful empty set, not an outage. When a recency-filtered request is empty it
-makes one retry against the same DuckDuckGo backend without the filter and
-records that effective filter. An unfiltered empty result remains empty. Timeout,
-rate-limit, and every other provider error fail closed as search unavailable.
+The DuckDuckGo adapter uses the installed DuckDuckGo engine through a
+status-aware boundary because DDGS collapses non-200 responses and legitimate
+empty pages into the same no-results exception. Only an HTTP 200 page with a
+recognized no-results DOM class is successful empty discovery. A
+recency-filtered verified-empty request gets one retry against the same backend
+without the filter and records that effective filter. Unrecognized layouts,
+challenges, non-200 responses, blank/malformed pages, timeouts, rate limits, and
+ambiguous sentinels fail closed as search unavailable; response bodies are not
+propagated in adapter errors. The private engine integration is pinned to the
+qualified DDGS release and guarded for its required runtime members.
 
 ## Persistence and artifact boundaries
 
@@ -256,6 +265,13 @@ another retry.
 Append-only records retain original inputs and hashes; mutable run status is a
 coordination projection, not an authority to rewrite history.
 
+One writable `AnalysisService` owns the repository at a time. It takes a
+process-local registration and a non-blocking `flock` on the mode-`0600`
+`<database>.writer.lock` sidecar before SQLite migration, interrupted-run
+recovery, or new writes. CLI `runs` and `show` use a true SQLite read-only
+connection and can inspect WAL state concurrently. The retained sidecar does not
+mean a writer is active; the held advisory lock does.
+
 Canonical exported artifacts are:
 
 - `board-brief.md` for board and adviser review;
@@ -266,6 +282,12 @@ Artifacts are written through temporary files and atomic replacement. An
 approval binds to the SHA-256 fingerprint of the canonical `BoardBrief`, not to
 a filename or run ID alone.
 
+Human decisions are post-Ralph events. The original attempt evaluation remains
+immutable; each approval atomically appends its decision plus quality, memo, and
+result revisions, then updates the current human/goal projections and run
+status. The newest verified revision is the API read model, while the original
+machine-time memo/result remain auditable.
+
 The API serves only the memo and evidence register, directly from immutable,
 hash-verified SQLite artifact payloads. It does not serve the audit sidecar,
 which can contain local-only request and trace data; authorized operators review
@@ -274,11 +296,11 @@ artifact directory, and `.env` are plaintext application files. Full-disk
 encryption, filesystem permissions, backup encryption, retention, and secure
 deletion are deployment responsibilities.
 
-On API startup, rows left in `created`, `acquiring_evidence`, or `verifying` by a
-previous process are marked `failed`, any open database attempts are closed as
-`interrupted`, and a failure artifact records the reason. Completed immutable
-results are hydrated after restart. Queued/in-progress computation is not
-automatically resumed.
+On API startup, after the writer lease is acquired, every row left in `created`,
+`acquiring_evidence`, or `verifying` by a previous process is marked `failed`,
+any open database attempts are closed as `interrupted`, and a failure artifact
+records the reason. Completed immutable results are hydrated after restart.
+Queued/in-progress computation is not automatically resumed.
 
 ## Local deployment
 

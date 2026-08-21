@@ -50,6 +50,20 @@ An `ApprovalRecord` is immutable and contains role, reviewer, review time,
 decision, and `brief_sha256`. The repository also links it to the immutable
 artifact and verifies that hashes match before insertion.
 
+The completed Ralph attempt report remains immutable. `AnalysisResult` exposes a
+separate `HumanApprovalProjection` for the current post-review gate; its
+`attempt_outcome` preserves what Ralph observed when the candidate completed,
+while `outcome`, role partitions, decision count, timestamp, and explanation
+describe the current exact-content decisions. This avoids presenting a later
+human action as if it happened inside an earlier machine attempt.
+
+Each decision atomically appends the approval, approval-time quality report,
+board-memo revision, and result revision, then updates the current goal
+projection and run status. The newest memo revision is the public download
+authority. Earlier memos and results remain immutable, including the original
+`human_required` revision; the post-commit filesystem memo is only a local
+convenience mirror.
+
 Any content change produces a new fingerprint. Earlier decisions remain in the
 audit log but become stale and have no authority over the new revision. If a
 role has both an approval and rejection for the current fingerprint, the current
@@ -111,6 +125,8 @@ Positive:
 - Ralph status communicates the difference between machine completion and human
   acceptance.
 - Revision history and stale decisions remain auditable.
+- Attempt-time machine evaluation and current human-gate state remain explicitly
+  distinguishable.
 - The system cannot invent approval from a confidence or quality score.
 
 Costs and limitations:
@@ -132,6 +148,10 @@ Automated tests prove:
 - a modified brief makes prior approvals stale;
 - artifact/run/hash mismatch is rejected by the repository;
 - approval rows cannot be updated or deleted;
+- every partial/final decision creates a durable memo/result revision and a
+  restart hydrates the newest projection without mutating the original attempt;
+- concurrent decisions cannot publish an older cached revision over a newer
+  transaction;
 - the Ralph publication criterion routes missing approvals to `human_required`
   only after required machine failures are clear; mixed reports retry or block
   under the bounded machine-gap rules.

@@ -20,9 +20,11 @@ financial advice.
   tools are excluded and guessed calls are rejected. Each force requests one
   parallel batch, with at most five searches executed; excess calls receive a
   limit error so the model can still return its typed bundle.
-- DuckDuckGo empty-result handling that distinguishes the provider's exact
-  no-results sentinel from outages. A filtered empty search gets one unfiltered
-  retry on DuckDuckGo; timeout, rate-limit, and other provider errors fail closed.
+- Status-aware DuckDuckGo handling that accepts emptiness only from an HTTP 200
+  page carrying an explicit no-results DOM marker. A filtered verified-empty
+  search gets one unfiltered retry on DuckDuckGo; layout changes, challenges,
+  non-200 responses, timeouts, and ambiguous provider sentinels fail closed
+  without exposing response bodies.
 - A separate, overarching Ralph supervisor that executes fresh analysis
   StateGraphs, evaluates explicit goals independently, issues gap-specific
   repair directives, checkpoints every completed attempt, and stops on success,
@@ -36,8 +38,11 @@ financial advice.
 - SQLite WAL persistence for acquisition, Ralph attempts, goals, searches,
   captures, immutable artifacts, and exact-content approvals. Startup fails
   interrupted work closed rather than pretending to resume an incomplete model
-  call. Every successful search execution is persisted synchronously before its
-  tool result returns, so discovery survives a later bundle-generation failure.
+  call. A POSIX advisory writer lease prevents supported API/CLI processes from
+  racing recovery or status writes, while read-only `runs` and `show` inspection
+  remains available. Every successful search execution is persisted
+  synchronously before its tool result returns, so discovery survives a later
+  bundle-generation failure.
 - A loopback-only FastAPI service, CLI, and a Contingency Atlas-inspired local
   decision-room UI.
 - Offline demo mode with clearly labeled synthetic evidence and live mode using
@@ -73,6 +78,11 @@ The default SQLite database, generated artifacts, and `.env` are ordinary local
 files, not encrypted application containers. Use workstation full-disk
 encryption, restrictive filesystem permissions, and an approved retention path
 for confidential runs.
+
+Run only one writable service against a database. A second supported writer
+fails immediately with a lease conflict; the adjacent `.writer.lock` file is a
+harmless retained coordination sidecar and must not be used as a busy-state
+signal.
 
 ## Local oMLX profile
 

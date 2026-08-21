@@ -169,6 +169,13 @@ coordination rows. Each completed Ralph attempt is also serialized as a
 hash-verified `ralph_checkpoint` artifact before a retry can start; the final
 analysis result and local audit sidecar retain the complete Ralph history.
 
+Human review does not update an attempt artifact. Each accepted decision appends
+an `approval_quality_report`, a `board_memo_markdown` revision, and an
+`analysis_result_revision`. The latter contains the current
+`HumanApprovalProjection`, including the immutable attempt-time approval outcome
+and the post-review outcome. The `GOALS` row is a current query projection; the
+append-only artifacts and approvals are the audit history.
+
 ## Content and lineage integrity
 
 | Record     | Integrity mechanism                                                                                                                                                                          |
@@ -194,6 +201,11 @@ On open, the repository applies:
 - `PRAGMA busy_timeout = 5000`;
 - numbered, transactional migrations;
 - `PRAGMA optimize` during explicit optimization and clean close.
+
+A writable `AnalysisService` additionally owns a process-local registration and
+POSIX advisory lock on `<database>.writer.lock`; this sidecar is coordination
+state, not an ERD entity. Read-only inspection opens the existing database using
+SQLite `mode=ro` plus `query_only` and does not acquire the writer lease.
 
 `:memory:` is supported for tests. All other paths are resolved as local
 filesystem paths; SQLite URI syntax and network-like URLs are rejected.
@@ -237,10 +249,12 @@ main database file while a WAL is active can omit committed pages. Artifacts
 written outside SQLite must be backed up with the database and correlated by
 run and content hash.
 
-On API startup, runs still in `created`, `acquiring_evidence`, or `verifying`
-are changed to `failed`, open attempts are closed as `interrupted`, and a failure
-artifact is appended. The persisted Ralph checkpoint supports diagnosis and
-audit; it is not a resumable execution checkpoint in this release.
+On API startup, after exclusive writer ownership is established, every run still
+in `created`, `acquiring_evidence`, or `verifying` is changed to `failed`, open
+attempts are closed as `interrupted`, and a failure artifact is appended. The
+scan is not capped by the UI/list pagination limit. The persisted Ralph
+checkpoint supports diagnosis and audit; it is not a resumable execution
+checkpoint in this release.
 
 SQLite, its WAL sidecars, and rendered run artifacts are ordinary local
 plaintext files. Content hashes detect accidental or unauthorized payload

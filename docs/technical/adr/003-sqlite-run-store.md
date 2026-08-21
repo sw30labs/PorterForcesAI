@@ -29,6 +29,21 @@ enables:
 - immutable approval records bound to an artifact content hash; and
 - `PRAGMA optimize` during maintenance and orderly close.
 
+The supported application boundary permits exactly one writable
+`AnalysisService` for a database. Service construction acquires a process-local
+registration and a non-blocking POSIX advisory lock on a mode-`0600`
+`<database>.writer.lock` sidecar before opening SQLite for migration, startup
+recovery, or analysis. A conflicting same-process or cross-process writer fails
+closed. The lock file is retained after release to avoid inode-replacement races;
+ownership is the held file lock, not the file's mere presence.
+
+Read-only repository/service instances open SQLite with `mode=ro` and
+`query_only`, so CLI `runs` and `show` can inspect a WAL database while the API
+owns the writer lease. Mutating through a read-only instance is rejected. Direct
+write use of `SQLiteRunRepository` is an internal escape hatch and is not a
+supported multi-process service topology; all normal writers go through
+`AnalysisService`.
+
 Executed queries, search hits, captures, generated artifacts, and approvals are
 append-only. SQLite triggers reject updates and deletes even if application code
 accidentally issues them. Run, attempt, and goal status fields remain mutable
@@ -139,7 +154,7 @@ flowchart TD
     G --> K{{Append Ralph checkpoint artifact}}
     K -->|retryable| W
     K -->|terminal| F{{Transaction: final artifacts + terminal status}}
-    F --> P{{Transaction: approval + goal + quality + result revision + status}}
+    F --> P{{Transaction: approval + goal + quality + memo + result revision + status}}
 
     Q -. rollback all .-> ERR[Conflict or FK error]
     C -. rollback .-> ERR
@@ -167,8 +182,14 @@ nonterminal run rather than resuming or declaring it complete.
 
 By contrast, the final immutable database outputs and terminal status are one
 outer repository transaction, and each approval plus its derived goal, quality
-report, result revision, and new status is one outer transaction. Local rendered
-file writes are filesystem operations and are not part of SQLite rollback.
+report, memo revision, result revision, and new status is one outer transaction.
+Local rendered file writes are filesystem operations and are not part of SQLite
+rollback.
+
+Startup recovery scans every nonterminal run without a presentation-limit cap.
+Because recovery executes only after the service owns the writer lease, a second
+process cannot misclassify a still-running writer's work as abandoned and then
+race that writer's terminal status.
 
 ## Migrations and indexes
 
@@ -214,6 +235,8 @@ Positive consequences:
 - Foreign keys and triggers provide defense beyond Python validators.
 - WAL permits the local UI to read progress while a worker commits bounded
   transactions.
+- The service writer lease prevents supported local API/CLI processes from
+  racing startup recovery or overwriting one another's status projections.
 - Canonical JSON makes approval and artifact hashes reproducible.
 - Public memo and evidence-register downloads are served from the newest
   hash-verified immutable SQLite payload, not from mutable rendered files.
@@ -222,6 +245,11 @@ Costs and limitations:
 
 - SQLite is a single-writer store. A multi-host service or sustained concurrent
   write workload requires a new storage ADR and repository implementation.
+- The writer lease uses POSIX `flock`; the supported local runtime is macOS or
+  Linux. Porting to Windows requires an equivalent locking implementation.
+- Advisory locks coordinate cooperating application processes, not hostile or
+  direct SQLite writers. Filesystem access control remains part of the trust
+  boundary.
 - WAL creates `-wal` and `-shm` sidecar files that backup tooling must treat as
   part of a live database.
 - Local filesystem permissions and full-disk encryption remain deployment
@@ -241,4 +269,6 @@ indexes, run/attempt/goal lifecycle, cross-run attempt rejection, atomic search
 insertion, source-registration enforcement, capture round trips, immutable
 triggers, nested transaction rollback, canonical artifact hashes, approval
 fingerprint matching, reopen persistence, local-path enforcement, optimization,
-and closed-repository behavior.
+closed-repository behavior, read-only inspection/write rejection, same-process
+and subprocess writer conflicts, lease release after normal and exceptional
+close, and uncapped recovery of more than one thousand abandoned runs.

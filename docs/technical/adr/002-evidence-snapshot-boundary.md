@@ -30,10 +30,15 @@ hits. It alone mints source IDs. The capture service accepts a source ID and
 resolves its URL from that ledger; it has no API that accepts a caller-supplied
 URL.
 
-DDGS's exact no-results sentinel is treated as successful empty discovery. A
-recency-filtered empty request gets one unfiltered retry on the same DuckDuckGo
-backend and records the relaxed filter. Timeouts, rate limits, and other provider
-errors fail closed.
+The adapter retains the DuckDuckGo engine's HTTP status because DDGS's
+no-results sentinel is ambiguous across legitimate empty pages and non-200
+responses. Only an HTTP 200 page with a recognized no-results DOM class is
+successful empty discovery. A recency-filtered verified-empty request gets one
+unfiltered retry on the same backend and records the relaxed filter.
+Unrecognized layouts, challenges, non-200 responses, malformed pages, timeouts,
+rate limits, and ambiguous sentinels fail closed without propagating response
+bodies. Because this status-aware boundary uses private engine members, DDGS is
+pinned to the qualified release and the required members are checked at runtime.
 
 Each force worker requests one parallel batch. At most five searches execute;
 excess calls receive explicit limit errors so typed bundle generation can still

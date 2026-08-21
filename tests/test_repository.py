@@ -20,6 +20,7 @@ from porter_forces_ai.domain import (
 from porter_forces_ai.repository import (
     RepositoryClosedError,
     RepositoryConflictError,
+    RepositoryError,
     RepositoryIntegrityError,
     SQLiteRunRepository,
 )
@@ -463,6 +464,49 @@ def test_database_reopens_without_reapplying_migrations(tmp_path: Path) -> None:
         assert reopened.health().schema_version == 2
         assert reopened.table_counts()["runs"] == 1
         reopened.optimize()
+
+
+def test_read_only_repository_supports_inspection_and_rejects_writes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "read-only.sqlite3"
+    with SQLiteRunRepository(path) as writer:
+        writer.create_run({"question": "Inspect?"}, run_id="RUN-read-only")
+
+    with SQLiteRunRepository(path, read_only=True) as reader:
+        assert reader.get_run("RUN-read-only") is not None
+        with pytest.raises(RepositoryError, match="read-only"):
+            reader.create_run({}, run_id="RUN-forbidden")
+        with pytest.raises(RepositoryError, match="read-only"):
+            reader.optimize()
+
+    with SQLiteRunRepository(path) as writer:
+        assert writer.get_run("RUN-forbidden") is None
+
+
+def test_close_releases_writer_lease_even_when_optimize_fails(tmp_path: Path) -> None:
+    path = tmp_path / "close-failure.sqlite3"
+    repository = SQLiteRunRepository(path, acquire_writer_lease=True)
+
+    def deny_optimize(
+        action: int,
+        argument_one: str | None,
+        _argument_two: str | None,
+        _database: str | None,
+        _trigger: str | None,
+    ) -> int:
+        if action == sqlite3.SQLITE_PRAGMA and (argument_one or "").casefold() == (
+            "optimize"
+        ):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    repository._connection.set_authorizer(deny_optimize)
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        repository.close()
+
+    replacement = SQLiteRunRepository(path, acquire_writer_lease=True)
+    replacement.close()
 
 
 @pytest.mark.parametrize(

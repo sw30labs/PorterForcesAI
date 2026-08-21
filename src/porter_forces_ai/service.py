@@ -196,17 +196,46 @@ class AnalysisService:
         settings: Settings | None = None,
         *,
         repository: SQLiteRunRepository | None = None,
+        read_only: bool = False,
     ) -> None:
         self.settings = settings or Settings()
-        self.repository = repository or SQLiteRunRepository(self.settings.database_path)
         self._owns_repository = repository is None
+        self._read_only = read_only
+        if repository is None:
+            if read_only:
+                self.repository = SQLiteRunRepository(
+                    self.settings.database_path,
+                    read_only=True,
+                )
+            else:
+                # Acquire the cross-process lease before SQLite migration or any
+                # other service-owned write can occur.
+                self.repository = SQLiteRunRepository(
+                    self.settings.database_path,
+                    acquire_writer_lease=True,
+                )
+        else:
+            self.repository = repository
+            if read_only and not repository.read_only:
+                raise AnalysisServiceError(
+                    "a read-only AnalysisService requires a read-only repository"
+                )
+            if not read_only:
+                self.repository.acquire_writer_lease()
         self._results: dict[str, AnalysisResult] = {}
         self._approval_locks: dict[str, threading.RLock] = {}
         self._lock = threading.RLock()
+        self._closed = False
 
     def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         if self._owns_repository:
             self.repository.close()
+        else:
+            self.repository.release_writer_lease()
 
     def __enter__(self) -> AnalysisService:
         return self
@@ -222,6 +251,7 @@ class AnalysisService:
     ) -> AnalysisResult:
         """Run acquisition once and Ralph-supervised synthesis to a terminal state."""
 
+        self._require_writer("analyze")
         run_id = run_id or self.new_run_id()
         started_at = datetime.now(UTC)
         result = AnalysisResult(
@@ -505,15 +535,14 @@ class AnalysisService:
     def recover_interrupted_runs(self) -> int:
         """Fail closed for nonterminal work left behind by a prior process."""
 
+        self._require_writer("recover interrupted runs")
         nonterminal = {
             ApplicationRunStatus.CREATED.value,
             ApplicationRunStatus.ACQUIRING_EVIDENCE.value,
             ApplicationRunStatus.VERIFYING.value,
         }
         recovered = 0
-        for record in self.repository.list_runs(limit=1_000):
-            if record.status not in nonterminal:
-                continue
+        for record in self.repository.list_runs_with_statuses(nonterminal):
             completed_at = datetime.now(UTC)
             message = (
                 "InterruptedRunError: the previous local process ended before this run "
@@ -550,6 +579,7 @@ class AnalysisService:
     ) -> AnalysisResult:
         """Append one exact-content decision and recompute publication status."""
 
+        self._require_writer("record approvals")
         # Human decisions commonly arrive from different board functions at
         # nearly the same time. Serialize the complete read/append/project/cache
         # sequence per run so a later transaction cannot be hidden by an older
@@ -779,6 +809,14 @@ class AnalysisService:
     def _approval_lock_for(self, run_id: str) -> threading.RLock:
         with self._lock:
             return self._approval_locks.setdefault(run_id, threading.RLock())
+
+    def _require_writer(self, operation: str) -> None:
+        if self._closed:
+            raise AnalysisServiceError("AnalysisService is closed")
+        if self._read_only:
+            raise AnalysisServiceError(
+                f"cannot {operation} through a read-only AnalysisService"
+            )
 
     def _prepare_demo(
         self,

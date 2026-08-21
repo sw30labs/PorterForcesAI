@@ -8,12 +8,15 @@ hits, captures, artifacts, and approvals are append-only at the database layer.
 
 from __future__ import annotations
 
+import atexit
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -47,6 +50,86 @@ class RepositoryConflictError(RepositoryError):
 
 class RepositoryIntegrityError(RepositoryError):
     """Persisted relationships or content hashes do not reconcile."""
+
+
+class RepositoryWriterLeaseConflictError(RepositoryError):
+    """Another AnalysisService owns the database writer lease."""
+
+
+_WRITER_LEASE_REGISTRY_LOCK = RLock()
+_WRITER_LEASE_REGISTRY: set[str] = set()
+
+
+class _RepositoryWriterLease:
+    """Process-local registration plus a POSIX advisory lock for one database."""
+
+    def __init__(self, database_path: str, *, memory_identity: int | None = None) -> None:
+        self.database_path = database_path
+        self.lock_path: str | None = None
+        self._fd: int | None = None
+        self._released = False
+        self._release_lock = RLock()
+        self._registry_key = (
+            f":memory:{memory_identity}"
+            if database_path == ":memory:"
+            else database_path
+        )
+
+        with _WRITER_LEASE_REGISTRY_LOCK:
+            if self._registry_key in _WRITER_LEASE_REGISTRY:
+                raise RepositoryWriterLeaseConflictError(
+                    "an AnalysisService already owns the writer lease for "
+                    f"database {database_path!r}; close that service before starting another"
+                )
+            _WRITER_LEASE_REGISTRY.add(self._registry_key)
+
+        try:
+            if database_path != ":memory:":
+                self.lock_path = f"{database_path}.writer.lock"
+                flags = os.O_RDWR | os.O_CREAT
+                if hasattr(os, "O_CLOEXEC"):
+                    flags |= os.O_CLOEXEC
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                self._fd = os.open(self.lock_path, flags, 0o600)
+                os.fchmod(self._fd, 0o600)
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            self._cleanup_failed_acquire()
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise RepositoryWriterLeaseConflictError(
+                    "another process owns the AnalysisService writer lease for "
+                    f"database {database_path!r}; close it before starting another service"
+                ) from exc
+            raise RepositoryError(
+                f"could not acquire the writer lease for database {database_path!r}"
+            ) from exc
+        atexit.register(self.release)
+
+    def _cleanup_failed_acquire(self) -> None:
+        if self._fd is not None:
+            with suppress(OSError):
+                os.close(self._fd)
+            self._fd = None
+        with _WRITER_LEASE_REGISTRY_LOCK:
+            _WRITER_LEASE_REGISTRY.discard(self._registry_key)
+
+    def release(self) -> None:
+        with self._release_lock:
+            if self._released:
+                return
+            self._released = True
+            try:
+                if self._fd is not None:
+                    with suppress(OSError):
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    with suppress(OSError):
+                        os.close(self._fd)
+                    self._fd = None
+            finally:
+                with _WRITER_LEASE_REGISTRY_LOCK:
+                    _WRITER_LEASE_REGISTRY.discard(self._registry_key)
+                atexit.unregister(self.release)
 
 
 def _utc_now() -> datetime:
@@ -103,7 +186,11 @@ def _require_text(value: str, label: str) -> str:
     return normalized
 
 
-def _local_database_path(path: str | os.PathLike[str]) -> str:
+def _local_database_path(
+    path: str | os.PathLike[str],
+    *,
+    create_parent: bool = True,
+) -> str:
     raw = os.fspath(path)
     if raw == ":memory:":
         return raw
@@ -114,7 +201,12 @@ def _local_database_path(path: str | os.PathLike[str]) -> str:
     resolved = Path(raw).expanduser().resolve(strict=False)
     if resolved.exists() and resolved.is_dir():
         raise ValueError("database path points to a directory")
-    resolved.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    elif not resolved.is_file():
+        raise RepositoryError(
+            f"read-only database does not exist at {str(resolved)!r}"
+        )
     return str(resolved)
 
 
@@ -354,26 +446,92 @@ _MIGRATIONS: tuple[tuple[int, str, str], ...] = (
 class SQLiteRunRepository:
     """Transactional local run store with append-only audit artifacts."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        self._path = _local_database_path(path)
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        acquire_writer_lease: bool = False,
+        read_only: bool = False,
+    ) -> None:
+        if acquire_writer_lease and read_only:
+            raise ValueError("a read-only repository cannot acquire a writer lease")
+        self._path = _local_database_path(path, create_parent=not read_only)
         self._lock = RLock()
         self._closed = False
-        self._connection = sqlite3.connect(
-            self._path,
-            timeout=5.0,
-            isolation_level=None,
-            check_same_thread=False,
-        )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA busy_timeout = 5000")
-        self._connection.execute("PRAGMA synchronous = NORMAL")
-        self._connection.execute("PRAGMA journal_mode = WAL")
-        self._migrate()
+        self._read_only = read_only
+        self._writer_lease: _RepositoryWriterLease | None = None
+        if acquire_writer_lease:
+            self._writer_lease = _RepositoryWriterLease(
+                self._path,
+                memory_identity=id(self),
+            )
+        connection: sqlite3.Connection | None = None
+        try:
+            connection_target = (
+                f"{Path(self._path).as_uri()}?mode=ro"
+                if self._read_only
+                else self._path
+            )
+            connection = sqlite3.connect(
+                connection_target,
+                timeout=5.0,
+                isolation_level=None,
+                check_same_thread=False,
+                uri=self._read_only,
+            )
+            self._connection = connection
+            self._connection.row_factory = sqlite3.Row
+            self._connection.execute("PRAGMA foreign_keys = ON")
+            self._connection.execute("PRAGMA busy_timeout = 5000")
+            if self._read_only:
+                self._connection.execute("PRAGMA query_only = ON")
+                self._verify_schema_for_read()
+            else:
+                self._connection.execute("PRAGMA synchronous = NORMAL")
+                self._connection.execute("PRAGMA journal_mode = WAL")
+                self._migrate()
+        except BaseException:
+            if connection is not None:
+                with suppress(sqlite3.Error):
+                    connection.close()
+            lease = self._writer_lease
+            self._writer_lease = None
+            if lease is not None:
+                lease.release()
+            raise
 
     @property
     def path(self) -> str:
         return self._path
+
+    @property
+    def read_only(self) -> bool:
+        return self._read_only
+
+    def acquire_writer_lease(self) -> None:
+        """Opt this repository into exclusive AnalysisService writer ownership."""
+
+        self._ensure_open()
+        with self._lock:
+            if self._read_only:
+                raise RepositoryError("a read-only repository cannot acquire a writer lease")
+            if self._writer_lease is not None:
+                raise RepositoryWriterLeaseConflictError(
+                    "this repository already has an active AnalysisService writer lease"
+                )
+            self._writer_lease = _RepositoryWriterLease(
+                self._path,
+                memory_identity=id(self),
+            )
+
+    def release_writer_lease(self) -> None:
+        """Release service ownership without closing a caller-owned repository."""
+
+        with self._lock:
+            lease = self._writer_lease
+            self._writer_lease = None
+        if lease is not None:
+            lease.release()
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -427,11 +585,29 @@ class SQLiteRunRepository:
         )
         self._connection.execute(f"PRAGMA user_version = {applied_version}")
 
+    def _verify_schema_for_read(self) -> None:
+        try:
+            row = self._connection.execute(
+                "SELECT coalesce(max(version), 0) FROM schema_migrations"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise RepositoryIntegrityError(
+                "read-only database has no compatible schema; initialize it with a writer first"
+            ) from exc
+        applied_version = int(row[0])
+        latest_supported = max(version for version, _name, _sql in _MIGRATIONS)
+        if applied_version != latest_supported:
+            raise RepositoryIntegrityError(
+                "read-only database schema does not match this application version"
+            )
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Open an immediate transaction, using savepoints when nested."""
 
         self._ensure_open()
+        if self._read_only:
+            raise RepositoryError("read-only repository does not permit transactions")
         with self._lock:
             nested = self._connection.in_transaction
             savepoint = f"sp_{uuid4().hex}"
@@ -529,6 +705,27 @@ class SQLiteRunRepository:
                     """,
                     (_require_text(status, "status"), limit),
                 ).fetchall()
+        return tuple(self._run_from_row(row) for row in rows)
+
+    def list_runs_with_statuses(
+        self,
+        statuses: Collection[str],
+    ) -> tuple[RunRecord, ...]:
+        """Return every run in explicit statuses without a presentation limit."""
+
+        normalized = tuple(sorted({_require_text(item, "status") for item in statuses}))
+        if not normalized:
+            return ()
+        placeholders = ", ".join("?" for _item in normalized)
+        self._ensure_open()
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT * FROM runs WHERE status IN ({placeholders})
+                ORDER BY created_at, run_id
+                """,
+                normalized,
+            ).fetchall()
         return tuple(self._run_from_row(row) for row in rows)
 
     @staticmethod
@@ -1176,6 +1373,8 @@ class SQLiteRunRepository:
 
     def optimize(self) -> None:
         self._ensure_open()
+        if self._read_only:
+            raise RepositoryError("read-only repository cannot optimize the database")
         with self._lock:
             self._connection.execute("PRAGMA optimize")
 
@@ -1183,9 +1382,20 @@ class SQLiteRunRepository:
         with self._lock:
             if self._closed:
                 return
-            self._connection.execute("PRAGMA optimize")
-            self._connection.close()
-            self._closed = True
+            try:
+                if self._read_only:
+                    self._connection.close()
+                else:
+                    try:
+                        self._connection.execute("PRAGMA optimize")
+                    finally:
+                        self._connection.close()
+            finally:
+                self._closed = True
+                lease = self._writer_lease
+                self._writer_lease = None
+                if lease is not None:
+                    lease.release()
 
     def __enter__(self) -> SQLiteRunRepository:
         return self

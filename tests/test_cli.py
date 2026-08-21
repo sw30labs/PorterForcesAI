@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage
 from typer.testing import CliRunner
 
 from porter_forces_ai.cli import _CanaryResponse, _run_model_canaries, app
+from porter_forces_ai.domain import DecisionRequest, OrganizationArchetype
+from porter_forces_ai.service import AnalysisMode, AnalysisService, AnalysisSubmission
 from porter_forces_ai.settings import Settings
 
 runner = CliRunner()
@@ -79,6 +81,55 @@ def test_run_command_executes_canonical_demo_file(
     assert payload["ralph_state"]["status"] == "achieved_draft"
     assert payload["scenario_economics"][0]["base_discounted_payback_month"] is not None
     assert Path(payload["artifact_paths"]["board_memo"]).exists()
+
+
+def test_show_and_runs_remain_read_only_while_api_writer_is_alive(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_PATH", str(tmp_path / "live-writer.db"))
+    monkeypatch.setenv("PFA_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    writer = AnalysisService(Settings())
+    try:
+        completed = writer.analyze(
+            AnalysisSubmission(
+                mode=AnalysisMode.DEMO,
+                request=DecisionRequest(
+                    question="Should the board authorize one bounded AI workflow?",
+                    archetype=OrganizationArchetype.GLOBAL_BANK,
+                    public_research_context=(
+                        "Synthetic offline context for a read-only CLI projection."
+                    ),
+                ),
+            )
+        )
+
+        shown = runner.invoke(app, ["show", completed.run_id, "--json"])
+        assert shown.exit_code == 0, shown.output
+        assert json.loads(shown.output)["run_id"] == completed.run_id
+
+        listed = runner.invoke(app, ["runs", "--json"])
+        assert listed.exit_code == 0, listed.output
+        assert json.loads(listed.output)[0]["run_id"] == completed.run_id
+    finally:
+        writer.close()
+
+
+def test_show_and_runs_do_not_create_an_uninitialized_database(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    database_path = tmp_path / "missing" / "not-created.db"
+    monkeypatch.setenv("PFA_DATABASE_PATH", str(database_path))
+
+    listed = runner.invoke(app, ["runs"])
+    assert listed.exit_code == 0
+    assert listed.output == "No persisted runs.\n"
+
+    shown = runner.invoke(app, ["show", "RUN-missing"])
+    assert shown.exit_code == 1
+    assert "run has no completed analysis result" in shown.output
+    assert not database_path.exists()
 
 
 def test_help_exposes_runtime_commands() -> None:

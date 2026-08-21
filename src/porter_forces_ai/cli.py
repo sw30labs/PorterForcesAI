@@ -250,8 +250,11 @@ def runs(
     from porter_forces_ai.repository import SQLiteRunRepository
 
     settings = Settings()
-    with SQLiteRunRepository(settings.database_path) as repository:
-        rows = repository.list_runs(limit=limit)
+    if settings.database_path.expanduser().is_file():
+        with SQLiteRunRepository(settings.database_path, read_only=True) as repository:
+            rows = repository.list_runs(limit=limit)
+    else:
+        rows = ()
     if as_json:
         typer.echo(
             json.dumps(
@@ -284,8 +287,12 @@ def show(
 
     from porter_forces_ai.service import AnalysisService
 
-    with AnalysisService(Settings()) as service:
-        result = service.get_result(run_id)
+    settings = Settings()
+    if settings.database_path.expanduser().is_file():
+        with AnalysisService(settings, read_only=True) as service:
+            result = service.get_result(run_id)
+    else:
+        result = None
     if result is None:
         typer.echo("FAILED: run has no completed analysis result", err=True)
         raise typer.Exit(code=1)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -25,7 +28,10 @@ from porter_forces_ai.ralph import (
     CriterionOutcome,
     RalphStatus,
 )
-from porter_forces_ai.repository import SQLiteRunRepository
+from porter_forces_ai.repository import (
+    RepositoryWriterLeaseConflictError,
+    SQLiteRunRepository,
+)
 from porter_forces_ai.service import (
     AnalysisMode,
     AnalysisResult,
@@ -99,6 +105,197 @@ def test_demo_service_runs_ralph_persists_and_renders(tmp_path: Path) -> None:
         assert counts["artifacts"] == 5  # checkpoint plus four immutable outputs
     finally:
         service.repository.close()
+
+
+def test_analysis_service_enforces_and_releases_one_writer_per_database(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "single-writer.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    first = AnalysisService(settings)
+    inspection = SQLiteRunRepository(settings.database_path, read_only=True)
+    try:
+        # A direct repository remains available for read-only inspection while
+        # the service owns the advisory writer lease.
+        assert inspection.list_runs() == ()
+        with pytest.raises(
+            RepositoryWriterLeaseConflictError,
+            match="writer lease",
+        ):
+            AnalysisService(settings)
+    finally:
+        inspection.close()
+        first.close()
+
+    replacement = AnalysisService(settings)
+    replacement.close()
+
+
+def test_repository_close_releases_service_writer_lease(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "repository-close.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    repository = SQLiteRunRepository(settings.database_path)
+    first = AnalysisService(settings, repository=repository)
+    repository.close()
+
+    replacement = AnalysisService(settings)
+    replacement.close()
+    first.close()
+
+
+def test_read_only_service_hydrates_but_rejects_every_write_path(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "read-only-service.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    writer = AnalysisService(settings)
+    try:
+        completed = writer.analyze(_submission())
+        reader = AnalysisService(settings, read_only=True)
+        try:
+            hydrated = reader.get_result(completed.run_id)
+            assert hydrated is not None
+            assert hydrated.status is ApplicationRunStatus.ACHIEVED_DRAFT
+            with pytest.raises(AnalysisServiceError, match="read-only"):
+                reader.analyze(_submission())
+            with pytest.raises(AnalysisServiceError, match="read-only"):
+                reader.recover_interrupted_runs()
+            with pytest.raises(AnalysisServiceError, match="read-only"):
+                reader.record_approval(
+                    completed.run_id,
+                    role=ApprovalRole.RISK,
+                    reviewer="Read-only reviewer",
+                    decision=ApprovalDecision.APPROVE,
+                )
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+
+def test_read_only_service_rejects_a_writable_injected_repository(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "unsafe-read-projection.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    repository = SQLiteRunRepository(settings.database_path)
+    try:
+        with pytest.raises(AnalysisServiceError, match="read-only repository"):
+            AnalysisService(settings, repository=repository, read_only=True)
+    finally:
+        repository.close()
+
+
+def test_writer_lease_conflicts_across_processes_and_releases_on_exit(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "subprocess-writer.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    script = """
+import sys
+from pathlib import Path
+from porter_forces_ai.repository import RepositoryWriterLeaseConflictError
+from porter_forces_ai.service import AnalysisService
+from porter_forces_ai.settings import Settings
+
+settings = Settings(
+    _env_file=None,
+    database_path=Path(sys.argv[1]),
+    artifacts_dir=Path(sys.argv[2]),
+)
+try:
+    service = AnalysisService(settings)
+except RepositoryWriterLeaseConflictError:
+    raise SystemExit(23)
+raise SystemExit(0)
+"""
+    environment = os.environ.copy()
+    first = AnalysisService(settings)
+    try:
+        conflict = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(settings.database_path),
+                str(settings.artifacts_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+        assert conflict.returncode == 23, conflict.stderr
+    finally:
+        first.close()
+
+    acquired_then_exited = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(settings.database_path),
+            str(settings.artifacts_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=environment,
+    )
+    assert acquired_then_exited.returncode == 0, acquired_then_exited.stderr
+    # The subprocess deliberately omitted close(); POSIX process teardown and
+    # the registered release callback must leave no stale lease.
+    replacement = AnalysisService(settings)
+    replacement.close()
+
+
+def test_recovery_processes_more_than_one_thousand_nonterminal_runs(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "large-recovery.db",
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    service = AnalysisService(settings)
+    nonterminal = ("created", "acquiring_evidence", "verifying")
+    try:
+        with service.repository.transaction():
+            for index in range(1_005):
+                service.repository.create_run(
+                    {"ordinal": index},
+                    run_id=f"RUN-interrupted-{index:04d}",
+                    status=nonterminal[index % len(nonterminal)],
+                )
+            service.repository.create_run(
+                {"terminal": True},
+                run_id="RUN-terminal-history",
+                status="achieved_draft",
+            )
+
+        assert service.recover_interrupted_runs() == 1_005
+        assert service.repository.list_runs_with_statuses(nonterminal) == ()
+        assert service.repository.get_run("RUN-terminal-history").status == (
+            "achieved_draft"
+        )
+        assert service.repository.table_counts()["artifacts"] == 1_005
+    finally:
+        service.close()
 
 
 def test_publishable_request_pauses_then_four_exact_approvals_publish(tmp_path: Path) -> None:

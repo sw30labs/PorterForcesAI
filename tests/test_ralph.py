@@ -217,6 +217,45 @@ def test_human_required_pauses_without_retrying() -> None:
     assert supervisor.run(result) is result
 
 
+def test_machine_failure_retries_before_human_pause() -> None:
+    analysis = RecordingAnalysis()
+    evaluator = SequenceEvaluator(
+        [
+            (CriterionOutcome.FAIL, CriterionOutcome.HUMAN_REQUIRED),
+            (CriterionOutcome.PASS, CriterionOutcome.HUMAN_REQUIRED),
+        ]
+    )
+    supervisor = make_supervisor(analysis, evaluator)
+
+    result = supervisor.run(initial_state(supervisor, stall_limit=3))
+
+    assert result.status is RalphStatus.HUMAN_REQUIRED
+    assert len(result.attempts) == 2
+    assert len(analysis.calls) == 2
+    assert result.attempts[1].directives_applied[0].criterion_id == "G-evidence"
+    assert "human judgment" in (result.terminal_reason or "")
+
+
+def test_mixed_machine_failure_and_human_requirement_obeys_attempt_bound() -> None:
+    analysis = RecordingAnalysis()
+    evaluator = SequenceEvaluator(
+        [
+            (CriterionOutcome.FAIL, CriterionOutcome.HUMAN_REQUIRED),
+            (CriterionOutcome.FAIL, CriterionOutcome.HUMAN_REQUIRED),
+        ]
+    )
+    supervisor = make_supervisor(analysis, evaluator)
+
+    result = supervisor.run(
+        initial_state(supervisor, max_attempts=2, stall_limit=3)
+    )
+
+    assert result.status is RalphStatus.BLOCKED
+    assert len(result.attempts) == 2
+    assert len(analysis.calls) == 2
+    assert "maximum attempts" in (result.terminal_reason or "")
+
+
 def test_max_attempts_blocks_open_goal() -> None:
     analysis = RecordingAnalysis()
     evaluator = SequenceEvaluator(

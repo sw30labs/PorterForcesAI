@@ -533,23 +533,23 @@ class RalphSupervisor:
             for evaluation in report.evaluations
             if criterion_by_id[evaluation.criterion_id].required
         ]
+        failed = [item for item in required if item.outcome is CriterionOutcome.FAIL]
+        if failed:
+            if any(not criterion_by_id[item.criterion_id].retryable for item in failed):
+                return RalphStatus.BLOCKED, "a required non-retryable criterion failed"
+            if attempt_count >= state.max_attempts:
+                return RalphStatus.BLOCKED, "maximum attempts exhausted with open criteria"
+            if consumed_budget >= state.max_budget_units:
+                return RalphStatus.BLOCKED, "budget exhausted with open criteria"
+            if consecutive_gaps >= state.stall_limit:
+                return RalphStatus.BLOCKED, "gap fingerprint repeated without measurable progress"
+            return RalphStatus.RUNNING, None
+
         if any(item.outcome is CriterionOutcome.HUMAN_REQUIRED for item in required):
             return RalphStatus.HUMAN_REQUIRED, "one or more criteria require human judgment"
-        if all(item.outcome is CriterionOutcome.PASS for item in required):
-            if state.target is CompletionTarget.PUBLISHABLE:
-                return RalphStatus.PUBLISHABLE, "all required publishability criteria passed"
-            return RalphStatus.ACHIEVED_DRAFT, "all required draft criteria passed"
-
-        failed = [item for item in required if item.outcome is CriterionOutcome.FAIL]
-        if any(not criterion_by_id[item.criterion_id].retryable for item in failed):
-            return RalphStatus.BLOCKED, "a required non-retryable criterion failed"
-        if attempt_count >= state.max_attempts:
-            return RalphStatus.BLOCKED, "maximum attempts exhausted with open criteria"
-        if consumed_budget >= state.max_budget_units:
-            return RalphStatus.BLOCKED, "budget exhausted with open criteria"
-        if consecutive_gaps >= state.stall_limit:
-            return RalphStatus.BLOCKED, "gap fingerprint repeated without measurable progress"
-        return RalphStatus.RUNNING, None
+        if state.target is CompletionTarget.PUBLISHABLE:
+            return RalphStatus.PUBLISHABLE, "all required publishability criteria passed"
+        return RalphStatus.ACHIEVED_DRAFT, "all required draft criteria passed"
 
     @staticmethod
     def _directives(report: GoalReport) -> tuple[GapDirective, ...]:

@@ -19,12 +19,13 @@ flowchart TD
     A --> G[Invoke analysis StateGraph]
     G --> E[Independent deterministic evaluator]
     E --> K[Persist attempt, goal rows,<br/>and Ralph checkpoint]
-    K --> H{Human judgment<br/>required?}
+    K --> F{Any required<br/>machine failure?}
+    F -- No --> H{Human judgment<br/>required?}
     H -- Yes --> P[Pause: human_required]
     H -- No --> C{All required<br/>criteria pass?}
     C -- Yes, draft target --> D[achieved_draft]
     C -- Yes, publish target --> U[publishable]
-    C -- No --> N{Non-retryable<br/>gap?}
+    F -- Yes --> N{Non-retryable<br/>gap?}
     N -- Yes --> B[blocked]
     N -- No --> X{Attempt or budget<br/>exhausted?}
     X -- Yes --> B
@@ -159,10 +160,15 @@ route as follows:
 | Evaluation | Supervisor action |
 |---|---|
 | all `pass` | `achieved_draft` or `publishable`, depending on target |
-| any `human_required` | pause as `human_required`; do not retry |
 | a non-retryable `fail` | `blocked` |
 | retryable `fail` with capacity | create directives and run a fresh attempt |
 | limits or stall reached | `blocked` |
+| `human_required` and no required `fail` | pause as `human_required`; do not retry |
+
+Required `fail` outcomes take precedence over `human_required`. A mixed report
+therefore retries or blocks under the normal non-retryable, attempt, budget, and
+stall rules. Ralph pauses for human judgment only after no required machine
+failure remains.
 
 An evaluator should use deterministic quality gates, canonical ledgers,
 calculation checks, and approval fingerprints. An LLM critique may produce
@@ -198,12 +204,13 @@ currency, or wall-clock time.
 ## Human pause
 
 `human_required` is a terminal result for the current invocation, not a failed
-retry. In the implemented publication flow it means that an otherwise valid
-exact brief still lacks one or more Strategy, Finance, Technology, or Risk
-approvals. Approvals are appended outside generation and recompute the
-publication gate for that same immutable brief. A rejection blocks the current
-revision and requires a new content revision/run; it is never treated as an
-automated writing instruction.
+retry. It is reachable only when no required criterion is `fail`. In the
+implemented publication flow it means that an otherwise machine-valid exact
+brief still lacks one or more Strategy, Finance, Technology, or Risk approvals.
+Approvals are appended outside generation and recompute the publication gate for
+that same immutable brief. A rejection blocks the current revision and requires
+a new content revision/run; it is never treated as an automated writing
+instruction.
 
 Ambiguous live scope and acquisition/model failures fail explicitly rather than
 masquerading as human pauses. Missing finance inputs remain visibly missing and

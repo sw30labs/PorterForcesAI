@@ -57,8 +57,11 @@ rejection changes the run to `blocked`. This local release has no workflow for
 overriding that decision in place; a new content revision/run must be reviewed.
 
 For a Ralph publishability target, the approval criterion is non-retryable by
-generation. Missing approvals produce `human_required`; the model must not keep
-rewriting text in an attempt to simulate human consent.
+generation. Missing approvals produce `human_required` only when no required
+machine criterion is failing; a mixed machine-fail/approval-missing report first
+follows normal retry, non-retryable, budget, attempt, and stall routing. The model
+must not keep rewriting an otherwise valid text in an attempt to simulate human
+consent.
 
 ## Role responsibilities
 
@@ -129,8 +132,9 @@ Automated tests prove:
 - a modified brief makes prior approvals stale;
 - artifact/run/hash mismatch is rejected by the repository;
 - approval rows cannot be updated or deleted;
-- the Ralph publication criterion routes missing approvals to `human_required`,
-  not another model retry.
+- the Ralph publication criterion routes missing approvals to `human_required`
+  only after required machine failures are clear; mixed reports retry or block
+  under the bounded machine-gap rules.
 
 The UI shows the exact fingerprint and revision under review, missing roles,
 stale approvals, rejections, and the current `draft_valid`/`publishable` state.

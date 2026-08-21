@@ -33,7 +33,7 @@ flowchart LR
     A -->|candidate artifact| V[Deterministic evaluator]
     V -->|GoalReport| R
     R -->|accepted| D[Draft or publishable artifact]
-    R -->|publication approval missing| H[Human decision]
+    R -->|approval missing + no machine failure| H[Human decision]
     R -->|limits/stall| B[Blocked report]
 ```
 
@@ -45,8 +45,10 @@ The following invariants are mandatory:
 4. Analysis output fields such as `done`, `valid`, or `confidence` have no
    authority over Ralph status.
 5. Failed criteria produce typed retry directives.
-6. A missing publication approval returns `human_required` immediately; a
-   reviewer rejection returns `blocked` and requires a new content revision.
+6. A missing publication approval returns `human_required` only after all
+   required machine criteria have no `fail` outcome. Required failures retain
+   retry/block/limit/stall precedence. A reviewer rejection returns `blocked`
+   and requires a new content revision.
 7. Attempt, budget, non-retryable-gap, and stall limits fail closed.
 8. `publishable` requires a publishability target whose required criteria
    include approval verification; draft achievement is a distinct status.
@@ -68,7 +70,7 @@ stateDiagram-v2
     running --> running: retryable gaps + progress + capacity
     running --> achieved_draft: all required draft criteria pass
     running --> publishable: all required publish criteria pass
-    running --> human_required: evaluator requests human judgment
+    running --> human_required: human judgment requested + no required failure
     running --> blocked: non-retryable gap
     running --> blocked: attempt/budget exhausted
     running --> blocked: repeated gap fingerprint

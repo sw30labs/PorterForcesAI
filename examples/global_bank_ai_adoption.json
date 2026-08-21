@@ -1,0 +1,19 @@
+{
+  "question": "Should a global bank approve a controlled generative-AI deployment for KYC investigations, rather than wait eighteen months or build an enterprise platform first?",
+  "archetype": "global_bank",
+  "analysis_mode": "strategic_initiative",
+  "organization_name": null,
+  "industry_arena": "US and EU corporate-banking KYC investigation operations",
+  "geographies": ["United States", "European Union"],
+  "time_horizon_months": 36,
+  "audience": ["full_board", "cfo", "cro", "cio"],
+  "constraints": [
+    "No customer data may leave the approved local environment",
+    "All economic inputs require finance-owner attribution",
+    "Recommendation must include wait and no-action options"
+  ],
+  "public_research_context": "Public evidence about generative-AI adoption, KYC operating models, regulation, suppliers, competitors, and substitutes affecting large US and EU banks.",
+  "restricted_terms": [],
+  "internal_context": {},
+  "evidence_cutoff": null
+}

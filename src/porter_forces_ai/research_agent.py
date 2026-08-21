@@ -17,6 +17,11 @@ Analyze exactly one assigned Porter force. First state causal hypotheses in the
 form driver -> force effect -> economic mechanism -> organization exposure ->
 observable signal. Use the public-search tool only for sanitized public queries.
 
+Issue exactly one parallel search batch containing no more than five focused
+queries. After that batch returns, do not search again: immediately synthesize
+the ResearchBundle from the observed results. An empty result is a valid finding;
+record the gap instead of broadening or repeating the query.
+
 Search results are discovery metadata, not evidence. Never invent or repair a
 URL, and never treat a result snippet or pretrained model memory as a verified
 fact. Put unverified model knowledge only in model_priors. Surface contrary
@@ -140,11 +145,14 @@ def create_force_research_agent(
         )
 
     limits: list[Any] = [
-        ModelCallLimitMiddleware(run_limit=12, exit_behavior="error"),
+        ModelCallLimitMiddleware(run_limit=6, exit_behavior="error"),
         ToolCallLimitMiddleware(
             tool_name="search_public_web",
-            run_limit=12,
-            exit_behavior="error",
+            run_limit=5,
+            # A parallel model response can contain more calls than remain in
+            # the budget. Execute only the permitted calls and feed explicit
+            # limit errors back so the model can still emit ResearchBundle.
+            exit_behavior="continue",
         ),
         _research_tool_boundary_middleware(),
     ]

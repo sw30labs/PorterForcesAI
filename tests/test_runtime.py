@@ -4,10 +4,17 @@ from porter_forces_ai.domain import (
     FORCE_ORDER,
     DecisionRequest,
     EvidenceOrigin,
+    ForceName,
     OrganizationArchetype,
+    ResearchQuery,
+    SearchHit,
 )
 from porter_forces_ai.economics import RangeEstimate, ScenarioEconomicsResult
-from porter_forces_ai.runtime import DeterministicDemoRuntime, OmlxAdvisorRuntime
+from porter_forces_ai.runtime import (
+    DeterministicDemoRuntime,
+    OmlxAdvisorRuntime,
+    RecordingSearchProvider,
+)
 from porter_forces_ai.workflow import build_workflow
 
 
@@ -171,3 +178,42 @@ def test_omlx_compose_and_challenge_prompts_receive_owned_economics() -> None:
     assert "Every supplied scenario has negative NPV" in compose_text
     assert '"scenario_name": "Controlled workflow deployment"' in compose_text
     assert "finance-owned NPV, ROI, payback" in challenge_text
+
+
+def test_recording_search_stamps_force_lineage_before_durability_callback() -> None:
+    class Search:
+        def search(self, request: ResearchQuery | str) -> list[SearchHit]:
+            assert isinstance(request, ResearchQuery)
+            return [
+                SearchHit(
+                    query_id=request.query_id,
+                    title="Observed result",
+                    url="https://example.org/report",
+                )
+            ]
+
+        async def asearch(self, request: ResearchQuery | str) -> list[SearchHit]:
+            return self.search(request)
+
+    persisted: list[tuple[ResearchQuery, tuple[SearchHit, ...]]] = []
+    recorder = RecordingSearchProvider(
+        Search(),
+        force=ForceName.RIVALRY,
+        on_execution=lambda query, hits: persisted.append((query, hits)),
+    )
+
+    returned = recorder.search(
+        ResearchQuery(
+            query_id="Q-agent-0001",
+            query="banking AI competition",
+            rationale="Find public rivalry evidence",
+        )
+    )
+
+    assert len(persisted) == 1
+    query, hits = persisted[0]
+    assert query.query_id == "Q-competitive_rivalry-0001"
+    assert query.force is ForceName.RIVALRY
+    assert hits[0].query_id == query.query_id
+    assert returned == list(hits)
+    assert recorder.executions == persisted

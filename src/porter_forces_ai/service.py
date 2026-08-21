@@ -33,6 +33,8 @@ from porter_forces_ai.domain import (
     ForceName,
     PublicResearchAssignment,
     ResearchBundle,
+    ResearchQuery,
+    SearchHit,
     SourceClass,
 )
 from porter_forces_ai.economics import (
@@ -681,11 +683,18 @@ class AnalysisService:
         source_force: dict[str, ForceName] = {}
         source_diversity_key: dict[str, str] = {}
         persisted_query_ids: set[str] = set()
+        persistence_lock = threading.Lock()
 
-        def persist_new_searches() -> None:
-            for query, hits in runtime.recorded_search_executions:
+        def persist_search(
+            query: ResearchQuery,
+            hits: tuple[SearchHit, ...],
+        ) -> None:
+            # Deep Agents may execute one parallel tool batch. Serialize the
+            # append-only ledger/SQLite projection while allowing the network
+            # searches themselves to remain concurrent.
+            with persistence_lock:
                 if query.query_id in persisted_query_ids:
-                    continue
+                    return
                 if query.force is None:
                     raise AnalysisServiceError(
                         "executed search is missing its Porter-force lineage"
@@ -708,6 +717,12 @@ class AnalysisService:
                     source_diversity_key[hit.source_id] = (
                         urlsplit(hit.url).hostname or hit.url
                     ).casefold()
+
+        def persist_new_searches() -> None:
+            for query, hits in runtime.recorded_search_executions:
+                persist_search(query, hits)
+
+        runtime.set_search_execution_callback(persist_search)
 
         bundles: list[ResearchBundle] = []
         for force in FORCE_ORDER:

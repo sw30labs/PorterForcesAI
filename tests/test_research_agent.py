@@ -206,3 +206,116 @@ def test_omlx_request_exposes_only_research_and_structured_output_tools() -> Non
     }
     assert visible_tools == {"search_public_web", "ResearchBundle"}
     assert visible_tools.isdisjoint(_DEEP_AGENT_BUILTIN_TOOLS)
+
+
+def test_parallel_search_batch_is_capped_but_structured_output_can_complete() -> None:
+    requests: list[dict[str, Any]] = []
+    structured_bundle = {
+        "force": "competitive_rivalry",
+        "hypotheses": [
+            {
+                "hypothesis_id": "H-rivalry",
+                "force": "competitive_rivalry",
+                "driver": "Competitor investment",
+                "force_effect": "Raises competitive pressure",
+                "economic_mechanism": "Compresses differentiation advantages",
+                "organization_exposure": "Increases the cost of delayed learning",
+                "observable_signals": ["Competitor deployment disclosures"],
+                "falsification_condition": "Competitors stop scaling deployments",
+            }
+        ],
+        "queries": [
+            {
+                "query_id": "Q-rivalry",
+                "force": "competitive_rivalry",
+                "query": "bank AI competitor deployment disclosures",
+                "rationale": "Test competitive investment intensity",
+                "preferred_source_classes": [],
+                "recency": None,
+            }
+        ],
+        "source_candidates": [],
+        "model_priors": [],
+        "evidence_gaps": ["No verified deployment economics found"],
+    }
+
+    def response(tool_calls: list[dict[str, Any]]) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-bounded-research",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "bounded-research-contract",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": tool_calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return response(
+                [
+                    {
+                        "id": f"call-search-{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "search_public_web",
+                            "arguments": json.dumps(
+                                {"query": f"bank AI rivalry public evidence {index}"}
+                            ),
+                        },
+                    }
+                    for index in range(6)
+                ]
+            )
+        return response(
+            [
+                {
+                    "id": "call-structured-output",
+                    "type": "function",
+                    "function": {
+                        "name": "ResearchBundle",
+                        "arguments": json.dumps(structured_bundle),
+                    },
+                }
+            ]
+        )
+
+    search = FakeSearch()
+    client = httpx.Client(transport=httpx.MockTransport(handle_request))
+    try:
+        model = ChatOpenAI(
+            model="bounded-research-contract",
+            api_key="local-test-key",
+            base_url="http://omlx.test/v1",
+            http_client=client,
+            max_retries=0,
+            use_responses_api=False,
+        )
+        agent = create_force_research_agent(
+            model,
+            search,
+            egress_policy=EgressPolicy(),
+        )
+
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": "Analyze competitive rivalry."}]}
+        )
+    finally:
+        client.close()
+
+    assert result["structured_response"].force == "competitive_rivalry"
+    assert len(search.requests) == 5
+    assert len(requests) == 2

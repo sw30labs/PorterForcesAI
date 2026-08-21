@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
@@ -68,29 +68,67 @@ class _ClaimSet(BaseModel):
 class RecordingSearchProvider:
     """Run-local decorator retaining the exact queries and discovery results."""
 
-    def __init__(self, delegate: SearchProvider) -> None:
+    def __init__(
+        self,
+        delegate: SearchProvider,
+        *,
+        force: ForceName | None = None,
+        on_execution: Callable[
+            [ResearchQuery, tuple[SearchHit, ...]], None
+        ]
+        | None = None,
+    ) -> None:
         self.delegate = delegate
+        self.force = force
+        self.on_execution = on_execution
         self.queries: list[ResearchQuery] = []
         self.hits: list[SearchHit] = []
         self.executions: list[tuple[ResearchQuery, tuple[SearchHit, ...]]] = []
+        self._sequence = 0
         self._lock = threading.Lock()
 
     def search(self, request: ResearchQuery | str) -> list[SearchHit]:
         results = self.delegate.search(request)
-        with self._lock:
-            if isinstance(request, ResearchQuery):
-                self.queries.append(request)
-                self.executions.append((request, tuple(results)))
-            self.hits.extend(results)
-        return results
+        return self._record(request, results)
 
     async def asearch(self, request: ResearchQuery | str) -> list[SearchHit]:
         results = await self.delegate.asearch(request)
+        return self._record(request, results)
+
+    def _record(
+        self,
+        request: ResearchQuery | str,
+        results: list[SearchHit],
+    ) -> list[SearchHit]:
+        callback: Callable[[ResearchQuery, tuple[SearchHit, ...]], None] | None = None
+        recorded_query: ResearchQuery | None = None
         with self._lock:
             if isinstance(request, ResearchQuery):
-                self.queries.append(request)
-                self.executions.append((request, tuple(results)))
+                self._sequence += 1
+                recorded_query = (
+                    request.model_copy(
+                        update={
+                            "query_id": f"Q-{self.force.value}-{self._sequence:04d}",
+                            "force": self.force,
+                        }
+                    )
+                    if self.force is not None
+                    else request.model_copy(deep=True)
+                )
+                recorded_results = tuple(
+                    hit.model_copy(update={"query_id": recorded_query.query_id})
+                    for hit in results
+                )
+                self.queries.append(recorded_query)
+                self.executions.append((recorded_query, recorded_results))
+                results = list(recorded_results)
+                callback = self.on_execution
             self.hits.extend(results)
+        # Persistence callbacks perform database I/O outside the recorder lock.
+        # They still run before the tool result is returned to the model, so a
+        # later structured-output failure cannot erase successful discovery.
+        if callback is not None and recorded_query is not None:
+            callback(recorded_query, tuple(results))
         return results
 
 
@@ -772,6 +810,9 @@ class OmlxAdvisorRuntime:
         self._recordings: dict[ForceName, RecordingSearchProvider] = {}
         self._decision_frame: DecisionFrame | None = None
         self._research_cache: dict[ForceName, ResearchBundle] = {}
+        self._search_execution_callback: Callable[
+            [ResearchQuery, tuple[SearchHit, ...]], None
+        ] | None = None
         self._gap_directives: tuple[GapDirective, ...] = ()
         self._lock = threading.Lock()
 
@@ -806,6 +847,19 @@ class OmlxAdvisorRuntime:
                 if (recording := self._recordings.get(force)) is not None
                 for execution in recording.executions
             )
+
+    def set_search_execution_callback(
+        self,
+        callback: Callable[[ResearchQuery, tuple[SearchHit, ...]], None],
+    ) -> None:
+        """Persist each completed public search before the agent can continue."""
+
+        with self._lock:
+            if self._recordings:
+                raise RuntimeContractError(
+                    "search persistence callback must be installed before research begins"
+                )
+            self._search_execution_callback = callback
 
     def freeze_captured_evidence(self, evidence: Sequence[EvidenceItem]) -> None:
         """Install the immutable, captured-page universe before Ralph begins."""
@@ -884,7 +938,17 @@ class OmlxAdvisorRuntime:
             cached = self._research_cache.get(assignment.force)
         if cached is not None:
             return cached
-        recording = RecordingSearchProvider(self.search)
+        with self._lock:
+            callback = self._search_execution_callback
+        recording = RecordingSearchProvider(
+            self.search,
+            force=assignment.force,
+            on_execution=callback,
+        )
+        # Register before invocation so completed executions remain observable
+        # even if the agent later fails to produce its typed bundle.
+        with self._lock:
+            self._recordings[assignment.force] = recording
         agent = create_force_research_agent(
             self.model,
             recording,
@@ -911,30 +975,12 @@ class OmlxAdvisorRuntime:
         if bundle.force != assignment.force:
             raise RuntimeContractError("research agent returned the wrong Porter force")
 
-        # Stamp globally unambiguous force lineage onto the exact executed query
-        # and hit records. Each force agent owns a fresh local query counter.
-        actual_queries: list[ResearchQuery] = []
-        actual_executions: list[tuple[ResearchQuery, tuple[SearchHit, ...]]] = []
-        actual_hits: list[SearchHit] = []
-        for index, (query, hits) in enumerate(recording.executions, start=1):
-            effective_query = query.model_copy(
-                update={
-                    "query_id": f"Q-{assignment.force.value}-{index:04d}",
-                    "force": assignment.force,
-                }
-            )
-            effective_hits = tuple(
-                hit.model_copy(update={"query_id": effective_query.query_id})
-                for hit in hits
-            )
-            actual_queries.append(effective_query)
-            actual_executions.append((effective_query, effective_hits))
-            actual_hits.extend(effective_hits)
+        # RecordingSearchProvider stamps force-scoped lineage before each tool
+        # result is returned and before its durability callback runs.
+        actual_queries = list(recording.queries)
+        actual_hits = list(recording.hits)
         if not actual_queries:
             raise RuntimeContractError("research worker completed without a public search")
-        recording.queries = actual_queries
-        recording.executions = actual_executions
-        recording.hits = actual_hits
 
         # Candidate metadata is reconstructed from observed provider output. The
         # model may nominate a URL, but cannot invent its title or query lineage.
@@ -951,8 +997,6 @@ class OmlxAdvisorRuntime:
             )
             for hit in selected_hits
         ]
-        with self._lock:
-            self._recordings[assignment.force] = recording
         reconciled_bundle = bundle.model_copy(
             update={
                 "queries": actual_queries,

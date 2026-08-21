@@ -33,6 +33,19 @@ _TRACKING_PARAMETERS = {
 }
 
 
+def _is_no_results_error(exc: Exception) -> bool:
+    """Recognize DDGS' empty-result sentinel without masking real outages."""
+
+    from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
+
+    message = str(exc).strip().rstrip(".").casefold()
+    return (
+        isinstance(exc, DDGSException)
+        and not isinstance(exc, (RatelimitException, TimeoutException))
+        and message == "no results found"
+    )
+
+
 def canonicalize_public_url(url: str) -> str:
     parsed = urlsplit(url.strip())
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
@@ -74,7 +87,7 @@ def canonicalize_public_url(url: str) -> str:
 
 @dataclass(slots=True)
 class DuckDuckGoSearchProvider:
-    """Search provider with explicit DuckDuckGo selection and no silent fallback."""
+    """Search provider that stays on DuckDuckGo and records recency relaxation."""
 
     policy: EgressPolicy = field(default_factory=EgressPolicy)
     region: str = "us-en"
@@ -89,6 +102,18 @@ class DuckDuckGoSearchProvider:
 
         return DDGS(timeout=self.timeout_seconds)
 
+    def _text(self, client: Any, *, query: str, recency: str | None) -> Any:
+        """Execute one request against the explicitly selected DuckDuckGo backend."""
+
+        return client.text(
+            query=query,
+            region=self.region,
+            safesearch="moderate",
+            timelimit=recency,
+            max_results=self.max_results,
+            backend="duckduckgo",
+        )
+
     def search(self, request: ResearchQuery | str) -> list[SearchHit]:
         if isinstance(request, ResearchQuery):
             query_id = request.query_id
@@ -99,17 +124,29 @@ class DuckDuckGoSearchProvider:
             query = request
             recency = None
         safe_query = self.policy.validate(query)
+        client = self._new_client()
+        relaxed_recency = False
         try:
-            rows = self._new_client().text(
-                query=safe_query,
-                region=self.region,
-                safesearch="moderate",
-                timelimit=recency,
-                max_results=self.max_results,
-                backend="duckduckgo",
-            )
+            rows = self._text(client, query=safe_query, recency=recency)
         except Exception as exc:  # provider exceptions are deliberately hidden at the port
-            raise SearchUnavailableError("DuckDuckGo search failed") from exc
+            if recency is None or not _is_no_results_error(exc):
+                raise SearchUnavailableError("DuckDuckGo search failed") from exc
+            relaxed_recency = True
+        else:
+            # DDGS currently raises for this case, but alternate client versions may return
+            # an empty list. Treat both representations of an empty filtered result alike.
+            relaxed_recency = recency is not None and not rows
+
+        if relaxed_recency:
+            try:
+                rows = self._text(client, query=safe_query, recency=None)
+            except Exception as exc:  # provider details remain behind the adapter boundary
+                raise SearchUnavailableError("DuckDuckGo search failed") from exc
+            if isinstance(request, ResearchQuery):
+                # RecordingSearchProvider observes the request after this call. Mutating only
+                # the effective filter keeps the persisted discovery record truthful: the
+                # successful request was unbounded, while its query text and ID are unchanged.
+                request.recency = None
 
         retrieved_at = datetime.now(UTC)
         hits: list[SearchHit] = []

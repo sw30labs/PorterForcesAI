@@ -1,10 +1,13 @@
 import pytest
+from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
 from porter_forces_ai.adapters.duckduckgo import (
     DuckDuckGoSearchProvider,
+    SearchUnavailableError,
     canonicalize_public_url,
 )
 from porter_forces_ai.domain import ResearchQuery
+from porter_forces_ai.egress import EgressPolicy, EgressViolation
 
 
 class FakeClient:
@@ -99,3 +102,119 @@ def test_adapter_skips_an_unsafe_result_without_losing_safe_results() -> None:
     hits = provider.search("bank AI competition")
 
     assert [hit.url for hit in hits] == ["https://example.org/public-report"]
+
+
+def test_adapter_retries_no_results_without_recency_on_same_backend() -> None:
+    class FilterSensitiveClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def text(self, **kwargs: object) -> list[dict[str, str]]:
+            self.calls.append(kwargs)
+            if kwargs["timelimit"] == "y":
+                raise DDGSException("No results found.")
+            return [
+                {
+                    "title": "Public report",
+                    "href": "https://example.org/public-report",
+                    "body": "Public discovery text",
+                }
+            ]
+
+    client = FilterSensitiveClient()
+    request = ResearchQuery(
+        query_id="Q-recency",
+        query="generative AI adoption global banks 2024 2025 investment",
+        rationale="Find recent competitive investment",
+        recency="y",
+    )
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    hits = provider.search(request)
+
+    assert [call["timelimit"] for call in client.calls] == ["y", None]
+    assert all(call["backend"] == "duckduckgo" for call in client.calls)
+    assert all(call["query"] == request.query for call in client.calls)
+    assert request.recency is None
+    assert [hit.query_id for hit in hits] == ["Q-recency"]
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [TimeoutException("timed out"), RatelimitException("rate limited")],
+)
+def test_adapter_does_not_relax_recency_for_provider_outages(
+    provider_error: Exception,
+) -> None:
+    class FailingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def text(self, **kwargs: object) -> list[dict[str, str]]:
+            self.calls.append(kwargs)
+            raise provider_error
+
+    client = FailingClient()
+    request = ResearchQuery(
+        query_id="Q-outage",
+        query="banking AI competition official report",
+        rationale="Find recent external pressure",
+        recency="y",
+    )
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search(request)
+
+    assert raised.value.__cause__ is provider_error
+    assert len(client.calls) == 1
+    assert request.recency == "y"
+
+
+def test_adapter_reports_unfiltered_retry_failure_without_rewriting_request() -> None:
+    fallback_error = RatelimitException("rate limited")
+
+    class FailingFallbackClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def text(self, **kwargs: object) -> list[dict[str, str]]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise DDGSException("No results found.")
+            raise fallback_error
+
+    client = FailingFallbackClient()
+    request = ResearchQuery(
+        query_id="Q-fallback",
+        query="banking AI competition official report",
+        rationale="Find recent external pressure",
+        recency="y",
+    )
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search(request)
+
+    assert raised.value.__cause__ is fallback_error
+    assert [call["timelimit"] for call in client.calls] == ["y", None]
+    assert request.recency == "y"
+
+
+def test_egress_policy_still_rejects_before_constructing_a_client() -> None:
+    client_constructed = False
+
+    def client_factory(**_: object) -> FakeClient:
+        nonlocal client_constructed
+        client_constructed = True
+        return FakeClient()
+
+    provider = DuckDuckGoSearchProvider(
+        policy=EgressPolicy(forbidden_terms=("Project Cedar",)),
+        client_factory=client_factory,
+    )
+
+    with pytest.raises(EgressViolation, match="run-confidential context"):
+        provider.search("Project Cedar banking AI competition")
+
+    assert client_constructed is False

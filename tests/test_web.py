@@ -117,6 +117,13 @@ def test_approval_endpoint_unlocks_exact_content_and_settings_hide_key(tmp_path:
             final = client.get(f"/api/runs/{run_id}").json()
             assert final["application_status"] == "publishable"
             assert len(final["details"]["approvals"]) == 4
+            assert final["quality_score"] == 1.0
+            assert final["details"]["human_approval"]["outcome"] == "pass"
+            published_memo = client.get(f"/api/runs/{run_id}/artifacts/board_memo")
+            assert published_memo.status_code == 200
+            assert "Publication approvals: **complete**" in published_memo.text
+            assert "Post-human approval gate: **pass**" in published_memo.text
+            assert "Ralph verification: **publishable**" in published_memo.text
 
             settings = client.get("/api/settings").json()
             assert settings["model"] == "Qwen3.8-27B-4bit"

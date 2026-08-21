@@ -37,6 +37,7 @@ def render_board_memo(
     scenario_economics: Sequence[ScenarioEconomicsResult] = (),
     cost_of_delay: CostOfDelayResult | None = None,
     ralph_summary: Mapping[str, Any] | None = None,
+    human_gate: Mapping[str, Any] | None = None,
 ) -> str:
     """Render an executive memo with traceability visible but unobtrusive."""
 
@@ -138,6 +139,20 @@ def render_board_memo(
         status = ralph_summary.get("status", "unknown")
         attempts = ralph_summary.get("attempt_count", ralph_summary.get("attempts", "unknown"))
         ralph_line = f"- Ralph verification: **{status}** after **{attempts}** attempt(s)\n"
+    human_gate_lines = ""
+    if human_gate:
+        outcome = human_gate.get("outcome", "unknown")
+        approved = ", ".join(str(item) for item in human_gate.get("approved_roles", ()))
+        missing = ", ".join(str(item) for item in human_gate.get("missing_roles", ()))
+        rejected = ", ".join(str(item) for item in human_gate.get("rejected_roles", ()))
+        human_gate_lines = "\n".join(
+            (
+                f"- Post-human approval gate: **{outcome}**",
+                f"- Approved roles: {approved or 'none'}",
+                f"- Outstanding roles: {missing or 'none'}",
+                f"- Rejected roles: {rejected or 'none'}",
+            )
+        ) + "\n"
     recommendation_basis = ", ".join(
         brief.recommendation.claim_ids + brief.recommendation.assumption_ids
     )
@@ -215,7 +230,7 @@ Scores are decision aids (1 low, 5 high), not financial forecasts.
 
 - Draft quality gate: **{"passed" if quality.draft_valid else "failed"}**
 - Publication approvals: **{"complete" if quality.publishable else "not complete"}**
-{ralph_line}- Market boundary: {frame.industry_boundary}
+{human_gate_lines}{ralph_line}- Market boundary: {frame.industry_boundary}
 - Baseline: {frame.baseline}
 
 ## Evidence index
@@ -263,7 +278,6 @@ def write_run_artifacts(
 ) -> dict[str, str]:
     """Atomically write the canonical memo, audit sidecar, and evidence register."""
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     artifacts: dict[str, tuple[str, str]] = {
         "board_memo": ("board-brief.md", memo),
         "audit_sidecar": (
@@ -274,12 +288,22 @@ def write_run_artifacts(
     }
     paths: dict[str, str] = {}
     for artifact_name, (filename, content) in artifacts.items():
-        target = output_dir / filename
-        temporary = target.with_suffix(f"{target.suffix}.tmp")
-        temporary.write_text(content, encoding="utf-8")
-        temporary.replace(target)
-        paths[artifact_name] = str(target)
+        paths[artifact_name] = _write_atomic(output_dir / filename, content)
     return paths
+
+
+def write_board_memo(output_dir: Path, memo: str) -> str:
+    """Refresh the mutable local mirror of the newest immutable memo revision."""
+
+    return _write_atomic(output_dir / "board-brief.md", memo)
+
+
+def _write_atomic(target: Path, content: str) -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(f"{target.suffix}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(target)
+    return str(target)
 
 
 def _json_default(value: object) -> object:

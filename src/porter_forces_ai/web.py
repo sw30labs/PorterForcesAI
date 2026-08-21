@@ -462,7 +462,15 @@ def _run_view(result: AnalysisResult, *, include_details: bool = False) -> dict[
     latest = result.ralph_state.latest_report if result.ralph_state else None
     quality_score = 0.0
     if latest and latest.evaluations:
-        passed = sum(item.outcome.value == "pass" for item in latest.evaluations)
+        passed = sum(
+            (
+                result.human_approval.outcome.value == "pass"
+                if item.criterion_id == "G-human-approval"
+                and result.human_approval is not None
+                else item.outcome.value == "pass"
+            )
+            for item in latest.evaluations
+        )
         quality_score = passed / len(latest.evaluations)
     payload: dict[str, Any] = {
         "id": result.run_id,

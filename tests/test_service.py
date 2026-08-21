@@ -4,6 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, Thread
 from urllib.parse import urlsplit
 
 import pytest
@@ -19,10 +20,15 @@ from porter_forces_ai.domain import (
     SearchHit,
 )
 from porter_forces_ai.economics import RangeEstimate, ScenarioEconomicsInputs
-from porter_forces_ai.ralph import CompletionTarget
+from porter_forces_ai.ralph import (
+    CompletionTarget,
+    CriterionOutcome,
+    RalphStatus,
+)
 from porter_forces_ai.repository import SQLiteRunRepository
 from porter_forces_ai.service import (
     AnalysisMode,
+    AnalysisResult,
     AnalysisService,
     AnalysisServiceError,
     AnalysisSubmission,
@@ -100,6 +106,13 @@ def test_publishable_request_pauses_then_four_exact_approvals_publish(tmp_path: 
     try:
         result = service.analyze(_submission(target=CompletionTarget.PUBLISHABLE))
         assert result.status is ApplicationRunStatus.HUMAN_REQUIRED
+        initial_memos = service.repository.list_artifacts(
+            result.run_id,
+            artifact_type="board_memo_markdown",
+        )
+        assert len(initial_memos) == 1
+        assert "Publication approvals: **not complete**" in initial_memos[0].payload
+        assert "Ralph verification: **human_required**" in initial_memos[0].payload
 
         for role in ApprovalRole:
             result = service.record_approval(
@@ -114,12 +127,144 @@ def test_publishable_request_pauses_then_four_exact_approvals_publish(tmp_path: 
         assert result.quality_report.publishable is True
         assert result.ralph_state is not None
         assert result.ralph_state.status.value == "publishable"
+        assert result.human_approval is not None
+        assert result.human_approval.outcome is CriterionOutcome.PASS
+        assert result.human_approval.attempt_outcome is CriterionOutcome.HUMAN_REQUIRED
+        assert result.human_approval.missing_roles == []
+        memo_revisions = service.repository.list_artifacts(
+            result.run_id,
+            artifact_type="board_memo_markdown",
+        )
+        assert len(memo_revisions) == 5
+        assert len({item.content_sha256 for item in memo_revisions}) == 5
+        assert memo_revisions[0].artifact_id == result.artifact_ids["board_memo"]
+        assert "Publication approvals: **complete**" in memo_revisions[0].payload
+        assert "Post-human approval gate: **pass**" in memo_revisions[0].payload
+        assert "Ralph verification: **publishable**" in memo_revisions[0].payload
+        assert "Publication approvals: **not complete**" in memo_revisions[-1].payload
+        assert "Ralph verification: **human_required**" in memo_revisions[-1].payload
+        local_memo = Path(result.artifact_paths["board_memo"]).read_text(encoding="utf-8")
+        assert local_memo == memo_revisions[0].payload
         human_goal = next(
             item
             for item in service.repository.list_goals(result.run_id)
             if item.criterion_key == "G-human-approval"
         )
         assert human_goal.status == "pass"
+    finally:
+        service.repository.close()
+
+
+def test_publishable_human_projection_and_latest_memo_survive_restart(
+    tmp_path: Path,
+) -> None:
+    first = _service(tmp_path)
+    result = first.analyze(_submission(target=CompletionTarget.PUBLISHABLE))
+    for role in ApprovalRole:
+        result = first.record_approval(
+            result.run_id,
+            role=role,
+            reviewer=f"{role.value} accountable reviewer",
+            decision=ApprovalDecision.APPROVE,
+        )
+    run_id = result.run_id
+    newest_memo_id = result.artifact_ids["board_memo"]
+    first.repository.close()
+
+    second = _service(tmp_path)
+    try:
+        restored = second.get_result(run_id)
+        assert restored is not None
+        assert restored.status is ApplicationRunStatus.PUBLISHABLE
+        assert restored.quality_report is not None
+        assert restored.quality_report.publishable is True
+        assert restored.ralph_state is not None
+        assert restored.ralph_state.status is RalphStatus.PUBLISHABLE
+        # Attempt-time results are immutable; the explicit projection records
+        # the later human transition without rewriting that history.
+        latest_human_attempt = next(
+            item
+            for item in restored.ralph_state.latest_report.evaluations
+            if item.criterion_id == "G-human-approval"
+        )
+        assert latest_human_attempt.outcome is CriterionOutcome.HUMAN_REQUIRED
+        assert restored.human_approval is not None
+        assert restored.human_approval.outcome is CriterionOutcome.PASS
+        assert restored.human_approval.attempt_outcome is CriterionOutcome.HUMAN_REQUIRED
+        assert len(restored.approvals) == 4
+        assert restored.artifact_ids["board_memo"] == newest_memo_id
+        latest_memo = second.repository.list_artifacts(
+            run_id,
+            artifact_type="board_memo_markdown",
+        )[0]
+        assert latest_memo.artifact_id == newest_memo_id
+        assert "Publication approvals: **complete**" in latest_memo.payload
+        human_goal = next(
+            item
+            for item in second.repository.list_goals(run_id)
+            if item.criterion_key == "G-human-approval"
+        )
+        assert human_goal.status == "pass"
+        assert human_goal.evidence["human_gate"]["outcome"] == "pass"
+    finally:
+        second.repository.close()
+
+
+def test_concurrent_approvals_cannot_publish_an_older_cache_revision(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    try:
+        initial = service.analyze(_submission(target=CompletionTarget.PUBLISHABLE))
+        first_waiting = Event()
+        second_cached = Event()
+        original_cache = service._cache
+
+        def ordered_cache(candidate: AnalysisResult) -> None:
+            approval_count = len(candidate.approvals)
+            if approval_count == 1:
+                first_waiting.set()
+                second_cached.wait(timeout=0.25)
+            original_cache(candidate)
+            if approval_count == 2:
+                second_cached.set()
+
+        service._cache = ordered_cache  # type: ignore[method-assign]
+        errors: list[BaseException] = []
+
+        def approve(role: ApprovalRole) -> None:
+            try:
+                service.record_approval(
+                    initial.run_id,
+                    role=role,
+                    reviewer=f"{role.value} accountable reviewer",
+                    decision=ApprovalDecision.APPROVE,
+                )
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        first_thread = Thread(target=approve, args=(ApprovalRole.STRATEGY,))
+        first_thread.start()
+        assert first_waiting.wait(timeout=2)
+        second_thread = Thread(target=approve, args=(ApprovalRole.FINANCE,))
+        second_thread.start()
+        first_thread.join(timeout=3)
+        second_thread.join(timeout=3)
+
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert errors == []
+        cached = service.get_result(initial.run_id)
+        assert cached is not None
+        assert len(cached.approvals) == 2
+        board_artifact_id = cached.artifact_ids["board_brief"]
+        assert len(service.repository.list_approvals(board_artifact_id)) == 2
+        assert len(
+            service.repository.list_artifacts(
+                initial.run_id,
+                artifact_type="analysis_result_revision",
+            )
+        ) == 2
     finally:
         service.repository.close()
 

@@ -5,15 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from porter_forces_ai.adapters.duckduckgo import DuckDuckGoSearchProvider
 from porter_forces_ai.adapters.omlx import create_chat_model
@@ -51,7 +52,12 @@ from porter_forces_ai.evaluation import (
     criteria_for,
     evidence_snapshot_id,
 )
-from porter_forces_ai.quality import QualityReport, brief_fingerprint, evaluate_brief
+from porter_forces_ai.quality import (
+    REQUIRED_APPROVAL_ROLES,
+    QualityReport,
+    brief_fingerprint,
+    evaluate_brief,
+)
 from porter_forces_ai.ralph import (
     AttemptContext,
     AttemptManifest,
@@ -61,7 +67,11 @@ from porter_forces_ai.ralph import (
     RalphStatus,
     RalphSupervisor,
 )
-from porter_forces_ai.renderers import render_board_memo, write_run_artifacts
+from porter_forces_ai.renderers import (
+    render_board_memo,
+    write_board_memo,
+    write_run_artifacts,
+)
 from porter_forces_ai.repository import SQLiteRunRepository
 from porter_forces_ai.runtime import DeterministicDemoRuntime, OmlxAdvisorRuntime
 from porter_forces_ai.settings import Settings
@@ -102,6 +112,51 @@ class AnalysisSubmission(ContractModel):
     stall_limit: int | None = Field(default=None, ge=2, le=10)
 
 
+class HumanApprovalProjection(ContractModel):
+    """Current human gate projected beside immutable attempt-time evaluations."""
+
+    projection_kind: Literal["post_human_approval_gate"] = "post_human_approval_gate"
+    criterion_id: Literal["G-human-approval"] = "G-human-approval"
+    outcome: CriterionOutcome
+    attempt_outcome: CriterionOutcome | None = None
+    brief_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    required_roles: list[ApprovalRole] = Field(min_length=4, max_length=4)
+    approved_roles: list[ApprovalRole] = Field(default_factory=list, max_length=4)
+    missing_roles: list[ApprovalRole] = Field(default_factory=list, max_length=4)
+    rejected_roles: list[ApprovalRole] = Field(default_factory=list, max_length=4)
+    decision_count: int = Field(ge=0)
+    evaluated_at: datetime
+    explanation: str = Field(min_length=3, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_role_projection(self) -> HumanApprovalProjection:
+        required = set(self.required_roles)
+        approved = set(self.approved_roles)
+        missing = set(self.missing_roles)
+        rejected = set(self.rejected_roles)
+        if required != set(REQUIRED_APPROVAL_ROLES):
+            raise ValueError("human approval projection must contain every required role")
+        if len(approved) != len(self.approved_roles):
+            raise ValueError("approved roles must be unique")
+        if len(missing) != len(self.missing_roles):
+            raise ValueError("missing roles must be unique")
+        if len(rejected) != len(self.rejected_roles):
+            raise ValueError("rejected roles must be unique")
+        if approved | missing != required or approved & missing:
+            raise ValueError("approved and missing roles must partition required roles")
+        if not rejected <= required:
+            raise ValueError("rejected roles must be required roles")
+        if self.outcome is CriterionOutcome.PASS and (missing or rejected):
+            raise ValueError("a passing human gate cannot have missing or rejected roles")
+        if self.outcome is CriterionOutcome.FAIL and not rejected:
+            raise ValueError("a failed human gate requires a current rejection")
+        if self.outcome is CriterionOutcome.HUMAN_REQUIRED and (
+            rejected or not missing
+        ):
+            raise ValueError("a human-required gate needs missing roles and no rejection")
+        return self
+
+
 class AnalysisResult(ContractModel):
     run_id: str
     mode: AnalysisMode
@@ -124,6 +179,7 @@ class AnalysisResult(ContractModel):
     artifact_paths: dict[str, str] = Field(default_factory=dict)
     artifact_ids: dict[str, str] = Field(default_factory=dict)
     approvals: list[ApprovalRecord] = Field(default_factory=list)
+    human_approval: HumanApprovalProjection | None = None
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
 
@@ -145,6 +201,7 @@ class AnalysisService:
         self.repository = repository or SQLiteRunRepository(self.settings.database_path)
         self._owns_repository = repository is None
         self._results: dict[str, AnalysisResult] = {}
+        self._approval_locks: dict[str, threading.RLock] = {}
         self._lock = threading.RLock()
 
     def close(self) -> None:
@@ -297,6 +354,14 @@ class AnalysisService:
             self._hydrate_result(result, ralph_state.latest_output)
             result.status = _application_status(ralph_state.status)
             result.completed_at = datetime.now(UTC)
+            if any(
+                criterion.criterion_id == "G-human-approval"
+                for criterion in ralph_state.criteria
+            ):
+                # The attempt report remains an immutable snapshot of the gate
+                # before human review. The current post-human state is projected
+                # explicitly on AnalysisResult and may later advance by approval.
+                self._apply_approval_state(result, ())
             with self.repository.transaction():
                 self._persist_success(
                     result,
@@ -485,6 +550,26 @@ class AnalysisService:
     ) -> AnalysisResult:
         """Append one exact-content decision and recompute publication status."""
 
+        # Human decisions commonly arrive from different board functions at
+        # nearly the same time. Serialize the complete read/append/project/cache
+        # sequence per run so a later transaction cannot be hidden by an older
+        # thread publishing its stale in-memory copy afterward.
+        with self._approval_lock_for(run_id):
+            return self._record_approval_locked(
+                run_id,
+                role=role,
+                reviewer=reviewer,
+                decision=decision,
+            )
+
+    def _record_approval_locked(
+        self,
+        run_id: str,
+        *,
+        role: ApprovalRole,
+        reviewer: str,
+        decision: ApprovalDecision,
+    ) -> AnalysisResult:
         result = self.get_result(run_id)
         if result is None or result.board_brief is None or result.evidence_ledger is None:
             raise AnalysisServiceError("run is absent or has no completed board brief")
@@ -512,6 +597,7 @@ class AnalysisService:
             goal_status, reason = self._apply_approval_state(result, approvals)
             if result.quality_report is None:
                 raise AnalysisServiceError("approval quality report was not produced")
+            memo = self._render_result_memo(result)
             approval_sha256 = approval.brief_sha256
             self.repository.save_goal(
                 run_id,
@@ -525,7 +611,12 @@ class AnalysisService:
                 evidence={
                     "brief_sha256": approval_sha256,
                     "decisions": [item.model_dump(mode="json") for item in approvals],
-                    "reason": reason,
+                    "human_gate": (
+                        result.human_approval.model_dump(mode="json")
+                        if result.human_approval is not None
+                        else None
+                    ),
+                    "run_state_reason": reason,
                 },
             )
             self.repository.put_artifact(
@@ -533,6 +624,16 @@ class AnalysisService:
                 artifact_type="approval_quality_report",
                 payload=result.quality_report,
             )
+            if result.ralph_state is None:
+                raise AnalysisServiceError("approval projection lost its Ralph state")
+            latest_attempt_id = result.ralph_state.attempts[-1].attempt_id
+            memo_artifact = self.repository.put_artifact(
+                run_id,
+                artifact_type="board_memo_markdown",
+                payload=memo,
+                attempt_id=latest_attempt_id,
+            )
+            result.artifact_ids["board_memo"] = memo_artifact.artifact_id
             self.repository.set_run_status(run_id, result.status.value)
             revision = self.repository.put_artifact(
                 run_id,
@@ -540,6 +641,14 @@ class AnalysisService:
                 payload=result,
             )
         result.artifact_ids["analysis_result"] = revision.artifact_id
+        # SQLite is the authority exposed by the API. Refresh the conventional
+        # local path only after that atomic transaction commits; an unavailable
+        # local mirror must not roll back an already durable human decision.
+        with suppress(OSError):
+            result.artifact_paths["board_memo"] = write_board_memo(
+                self.settings.artifacts_dir / run_id,
+                memo,
+            )
         self._cache(result)
         return result
 
@@ -569,10 +678,61 @@ class AnalysisService:
             approvals,
         )
         current_fingerprint = brief_fingerprint(result.board_brief)
-        current_rejected = any(
-            item.decision is ApprovalDecision.REJECT
-            and item.brief_sha256 == current_fingerprint
-            for item in approvals
+        current_approvals = tuple(
+            item for item in approvals if item.brief_sha256 == current_fingerprint
+        )
+        approved_roles = {
+            item.role
+            for item in current_approvals
+            if item.decision is ApprovalDecision.APPROVE
+        }
+        rejected_roles = {
+            item.role
+            for item in current_approvals
+            if item.decision is ApprovalDecision.REJECT
+        }
+        missing_roles = set(REQUIRED_APPROVAL_ROLES) - approved_roles
+        if rejected_roles:
+            human_outcome = CriterionOutcome.FAIL
+            human_goal_status = "fail"
+            human_reason = (
+                "one or more required roles rejected the exact current brief"
+            )
+        elif missing_roles:
+            human_outcome = CriterionOutcome.HUMAN_REQUIRED
+            human_goal_status = "human_required"
+            human_reason = (
+                "one or more exact-content publication approvals remain outstanding"
+            )
+        else:
+            human_outcome = CriterionOutcome.PASS
+            human_goal_status = "pass"
+            human_reason = "all required roles approved the exact current brief"
+
+        attempt_human_outcome = next(
+            (
+                item.outcome
+                for item in result.ralph_state.latest_report.evaluations
+                if item.criterion_id == "G-human-approval"
+            ),
+            None,
+        )
+        evaluated_at = (
+            max(item.reviewed_at for item in current_approvals)
+            if current_approvals
+            else result.completed_at or result.started_at
+        )
+        result.human_approval = HumanApprovalProjection(
+            outcome=human_outcome,
+            attempt_outcome=attempt_human_outcome,
+            brief_sha256=current_fingerprint,
+            required_roles=_sorted_approval_roles(REQUIRED_APPROVAL_ROLES),
+            approved_roles=_sorted_approval_roles(approved_roles),
+            missing_roles=_sorted_approval_roles(missing_roles),
+            rejected_roles=_sorted_approval_roles(rejected_roles),
+            decision_count=len(current_approvals),
+            evaluated_at=evaluated_at,
+            explanation=human_reason,
         )
         machine_gaps = []
         if result.ralph_state is not None and result.ralph_state.latest_report is not None:
@@ -585,12 +745,10 @@ class AnalysisService:
         if machine_gaps:
             result.status = ApplicationRunStatus.BLOCKED
             ralph_status = RalphStatus.BLOCKED
-            goal_status = "fail"
             reason = "machine acceptance criteria remain open; approvals cannot override them"
-        elif current_rejected:
+        elif rejected_roles:
             result.status = ApplicationRunStatus.BLOCKED
             ralph_status = RalphStatus.BLOCKED
-            goal_status = "fail"
             reason = (
                 "a required reviewer rejected the exact current brief; a new content "
                 "revision is required before publication"
@@ -598,20 +756,29 @@ class AnalysisService:
         elif result.quality_report.publishable:
             result.status = ApplicationRunStatus.PUBLISHABLE
             ralph_status = RalphStatus.PUBLISHABLE
-            goal_status = "pass"
             reason = (
                 "all required machine criteria and exact-content human approvals passed"
+            )
+        elif human_outcome is CriterionOutcome.PASS:
+            result.status = ApplicationRunStatus.BLOCKED
+            ralph_status = RalphStatus.BLOCKED
+            reason = (
+                "exact-content approvals are complete, but the current draft quality gate "
+                "does not permit publication"
             )
         else:
             result.status = ApplicationRunStatus.HUMAN_REQUIRED
             ralph_status = RalphStatus.HUMAN_REQUIRED
-            goal_status = "human_required"
             reason = "one or more exact-content publication approvals remain outstanding"
         if result.ralph_state is not None:
             state_payload = result.ralph_state.model_dump(mode="python")
             state_payload.update(status=ralph_status, terminal_reason=reason)
             result.ralph_state = RalphState.model_validate(state_payload)
-        return goal_status, reason
+        return human_goal_status, reason
+
+    def _approval_lock_for(self, run_id: str) -> threading.RLock:
+        with self._lock:
+            return self._approval_locks.setdefault(run_id, threading.RLock())
 
     def _prepare_demo(
         self,
@@ -894,6 +1061,41 @@ class AnalysisService:
         result.challenge_report = ChallengeReport.model_validate(output["challenge_report"])
         result.quality_report = QualityReport.model_validate(output["quality_report"])
 
+    def _render_result_memo(
+        self,
+        result: AnalysisResult,
+        *,
+        fallback_frame: DecisionFrame | None = None,
+    ) -> str:
+        if (
+            result.board_brief is None
+            or result.evidence_ledger is None
+            or result.quality_report is None
+            or result.ralph_state is None
+        ):
+            raise AnalysisServiceError("cannot render an incomplete analysis result")
+        frame = result.decision_frame or fallback_frame
+        if frame is None:
+            raise AnalysisServiceError("cannot render a memo without its decision frame")
+        return render_board_memo(
+            brief=result.board_brief,
+            frame=frame,
+            ledger=result.evidence_ledger,
+            quality=result.quality_report,
+            mode=result.mode.value,
+            scenario_economics=result.scenario_economics,
+            cost_of_delay=result.cost_of_delay,
+            ralph_summary={
+                "status": result.ralph_state.status.value,
+                "attempt_count": len(result.ralph_state.attempts),
+            },
+            human_gate=(
+                result.human_approval.model_dump(mode="json")
+                if result.human_approval is not None
+                else None
+            ),
+        )
+
     def _persist_success(
         self,
         result: AnalysisResult,
@@ -915,19 +1117,7 @@ class AnalysisService:
             attempt_id=latest_attempt_id,
         )
         result.artifact_ids["board_brief"] = board_artifact.artifact_id
-        memo = render_board_memo(
-            brief=result.board_brief,
-            frame=result.decision_frame or frame,
-            ledger=result.evidence_ledger,
-            quality=result.quality_report,
-            mode=result.mode.value,
-            scenario_economics=result.scenario_economics,
-            cost_of_delay=result.cost_of_delay,
-            ralph_summary={
-                "status": result.ralph_state.status.value,
-                "attempt_count": len(result.ralph_state.attempts),
-            },
-        )
+        memo = self._render_result_memo(result, fallback_frame=frame)
         output_dir = self.settings.artifacts_dir / result.run_id
         result.artifact_paths = write_run_artifacts(
             output_dir,
@@ -1198,6 +1388,10 @@ def _application_status(status: RalphStatus) -> ApplicationRunStatus:
         RalphStatus.RUNNING: ApplicationRunStatus.VERIFYING,
     }
     return mapping[status]
+
+
+def _sorted_approval_roles(roles: Iterable[ApprovalRole]) -> list[ApprovalRole]:
+    return sorted(set(roles), key=lambda role: role.value)
 
 
 def result_etag(result: AnalysisResult) -> str:

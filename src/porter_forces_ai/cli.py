@@ -147,6 +147,7 @@ def demo(
 
     from porter_forces_ai.domain import DecisionRequest, OrganizationArchetype
     from porter_forces_ai.ralph import CompletionTarget
+    from porter_forces_ai.repository import RepositoryError
     from porter_forces_ai.service import (
         AnalysisMode,
         AnalysisService,
@@ -170,7 +171,7 @@ def demo(
         )
         with AnalysisService(Settings()) as service:
             result = service.analyze(submission)
-    except (ValueError, ValidationError, AnalysisServiceError) as exc:
+    except (ValueError, ValidationError, RepositoryError, AnalysisServiceError) as exc:
         typer.echo(f"FAILED: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     _emit_result(result, as_json=as_json)
@@ -191,6 +192,7 @@ def analyze(
 ) -> None:
     """Run live local-oMLX analysis with DuckDuckGo and captured public evidence."""
 
+    from porter_forces_ai.repository import RepositoryError
     from porter_forces_ai.service import (
         AnalysisMode,
         AnalysisService,
@@ -205,7 +207,13 @@ def analyze(
         )
         with AnalysisService(Settings()) as service:
             result = service.analyze(submission)
-    except (OSError, json.JSONDecodeError, ValidationError, AnalysisServiceError) as exc:
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ValidationError,
+        RepositoryError,
+        AnalysisServiceError,
+    ) as exc:
         typer.echo(f"FAILED: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     _emit_result(result, as_json=as_json)
@@ -226,6 +234,7 @@ def run_submission(
 ) -> None:
     """Run a canonical submission in its declared demo or live mode."""
 
+    from porter_forces_ai.repository import RepositoryError
     from porter_forces_ai.service import AnalysisService, AnalysisServiceError, AnalysisSubmission
 
     try:
@@ -234,7 +243,7 @@ def run_submission(
         )
         with AnalysisService(Settings()) as service:
             result = service.analyze(submission)
-    except (OSError, ValidationError, AnalysisServiceError) as exc:
+    except (OSError, ValidationError, RepositoryError, AnalysisServiceError) as exc:
         typer.echo(f"FAILED: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     _emit_result(result, as_json=as_json)

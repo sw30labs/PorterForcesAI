@@ -132,6 +132,24 @@ def test_show_and_runs_do_not_create_an_uninitialized_database(
     assert not database_path.exists()
 
 
+def test_analysis_cli_reports_writer_lease_conflict_without_traceback(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_PATH", str(tmp_path / "owned.db"))
+    writer = AnalysisService(Settings())
+    try:
+        result = runner.invoke(app, ["demo"])
+    finally:
+        writer.close()
+
+    assert result.exit_code == 1
+    assert "FAILED:" in result.output
+    assert "already owns the writer lease" in result.output
+    assert result.exception is not None
+    assert "Traceback" not in result.output
+
+
 def test_help_exposes_runtime_commands() -> None:
     result = runner.invoke(app, ["--help"])
 

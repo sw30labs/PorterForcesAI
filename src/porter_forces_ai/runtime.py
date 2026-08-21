@@ -71,6 +71,7 @@ class RecordingSearchProvider:
         self.delegate = delegate
         self.queries: list[ResearchQuery] = []
         self.hits: list[SearchHit] = []
+        self.executions: list[tuple[ResearchQuery, tuple[SearchHit, ...]]] = []
         self._lock = threading.Lock()
 
     def search(self, request: ResearchQuery | str) -> list[SearchHit]:
@@ -78,6 +79,7 @@ class RecordingSearchProvider:
         with self._lock:
             if isinstance(request, ResearchQuery):
                 self.queries.append(request)
+                self.executions.append((request, tuple(results)))
             self.hits.extend(results)
         return results
 
@@ -86,6 +88,7 @@ class RecordingSearchProvider:
         with self._lock:
             if isinstance(request, ResearchQuery):
                 self.queries.append(request)
+                self.executions.append((request, tuple(results)))
             self.hits.extend(results)
         return results
 
@@ -573,6 +576,20 @@ class OmlxAdvisorRuntime:
                 hit
                 for force in FORCE_ORDER
                 for hit in self._recordings.get(force, RecordingSearchProvider(self.search)).hits
+            )
+
+    @property
+    def recorded_search_executions(
+        self,
+    ) -> tuple[tuple[ResearchQuery, tuple[SearchHit, ...]], ...]:
+        """Return exact query/result pairs in canonical force execution order."""
+
+        with self._lock:
+            return tuple(
+                execution
+                for force in FORCE_ORDER
+                if (recording := self._recordings.get(force)) is not None
+                for execution in recording.executions
             )
 
     def freeze_captured_evidence(self, evidence: Sequence[EvidenceItem]) -> None:

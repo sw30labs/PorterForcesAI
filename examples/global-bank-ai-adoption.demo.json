@@ -1,0 +1,45 @@
+{
+  "request": {
+    "question": "Should a global bank authorize a controlled generative-AI workflow now, and what happens if it waits eighteen months?",
+    "archetype": "global_bank",
+    "analysis_mode": "strategic_initiative",
+    "organization_name": "Illustrative Global Bank",
+    "industry_arena": "US and EU regulated banking knowledge workflows",
+    "geographies": ["United States", "European Union"],
+    "time_horizon_months": 36,
+    "audience": ["full_board", "cfo", "cro", "cio"],
+    "constraints": ["No customer-facing autonomy", "Exercise provider exit before scale"],
+    "public_research_context": "Public evidence about generative-AI adoption, technology suppliers, customer behavior, substitutes, entrants, and competitive investment in regulated global banking.",
+    "restricted_terms": ["Project Cedar"],
+    "internal_context": {
+      "program": "Project Cedar",
+      "note": "Synthetic example only; replace with owned institution facts."
+    }
+  },
+  "mode": "demo",
+  "target": "draft",
+  "scenario_economics": [
+    {
+      "scenario_name": "Controlled workflow deployment",
+      "currency": "USD",
+      "horizon_years": 3,
+      "discount_rate": 0.1,
+      "benefit_start_month": 7,
+      "upfront_cost": {"low": 20000000, "base": 35000000, "high": 55000000, "unit": "USD", "basis_ids": ["FINANCE-OWNED-UPFRONT"]},
+      "annual_gross_benefit": {"low": 35000000, "base": 90000000, "high": 150000000, "unit": "USD", "basis_ids": ["FINANCE-OWNED-BENEFIT"]},
+      "benefit_realization_rate": {"low": 0.35, "base": 0.55, "high": 0.75, "unit": "ratio", "basis_ids": ["FINANCE-OWNED-REALIZATION"]},
+      "annual_run_cost": {"low": 8000000, "base": 12000000, "high": 18000000, "unit": "USD", "basis_ids": ["TECHNOLOGY-OWNED-RUN-COST"]},
+      "annual_control_cost": {"low": 4000000, "base": 7000000, "high": 12000000, "unit": "USD", "basis_ids": ["RISK-OWNED-CONTROL-COST"]},
+      "annual_expected_loss": {"low": 1000000, "base": 3000000, "high": 8000000, "unit": "USD", "basis_ids": ["RISK-OWNED-EXPECTED-LOSS"]}
+    }
+  ],
+  "cost_of_delay": {
+    "currency": "USD",
+    "period_months": 18,
+    "foregone_benefit": {"low": 8000000, "base": 16000000, "high": 30000000, "unit": "USD", "basis_ids": ["FINANCE-OWNED-FOREGONE"]},
+    "competitive_erosion": {"low": 2000000, "base": 8000000, "high": 20000000, "unit": "USD", "basis_ids": ["STRATEGY-OWNED-EROSION"]},
+    "accumulated_technical_and_control_debt": {"low": 1000000, "base": 5000000, "high": 12000000, "unit": "USD", "basis_ids": ["TECHNOLOGY-OWNED-DEBT"]},
+    "lost_learning_advantage": {"low": 3000000, "base": 9000000, "high": 22000000, "unit": "USD", "basis_ids": ["STRATEGY-OWNED-LEARNING"]},
+    "savings_from_waiting": {"low": 4000000, "base": 8000000, "high": 15000000, "unit": "USD", "basis_ids": ["FINANCE-OWNED-WAIT-SAVINGS"]}
+  }
+}

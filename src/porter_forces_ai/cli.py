@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from pathlib import Path
+from typing import Annotated, Literal
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from porter_forces_ai.adapters.omlx import (
     OmlxConfigurationError,
@@ -15,7 +16,10 @@ from porter_forces_ai.adapters.omlx import (
 )
 from porter_forces_ai.settings import Settings
 
-app = typer.Typer(no_args_is_help=True, help="Porter Five Forces development foundation")
+app = typer.Typer(
+    no_args_is_help=True,
+    help="Evidence-led Porter Five Forces and board decision intelligence",
+)
 
 
 class _CanaryResponse(BaseModel):
@@ -24,7 +28,7 @@ class _CanaryResponse(BaseModel):
 
 @app.callback()
 def main() -> None:
-    """Porter Five Forces development foundation."""
+    """Porter Five Forces board decision intelligence."""
 
 
 def _run_model_canaries(settings: Settings) -> dict[str, bool]:
@@ -119,6 +123,209 @@ def doctor(
             typer.echo(f"Canaries: {result['canaries']}")
     if not ok:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def demo(
+    question: str = typer.Option(
+        (
+            "Should a global bank authorize one controlled generative-AI workflow now, "
+            "and what happens if it waits eighteen months?"
+        ),
+        "--question",
+        "-q",
+        help="Board decision to analyze using labeled synthetic evidence.",
+    ),
+    archetype: str = typer.Option(
+        "global_bank",
+        help="global_bank, quant_trading, or insurer",
+    ),
+    target: str = typer.Option("draft", help="draft or publishable"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the complete result as JSON."),
+) -> None:
+    """Run the complete graph offline with an explicitly synthetic evidence fixture."""
+
+    from porter_forces_ai.domain import DecisionRequest, OrganizationArchetype
+    from porter_forces_ai.ralph import CompletionTarget
+    from porter_forces_ai.service import (
+        AnalysisMode,
+        AnalysisService,
+        AnalysisServiceError,
+        AnalysisSubmission,
+    )
+
+    try:
+        request = DecisionRequest(
+            question=question,
+            archetype=OrganizationArchetype(archetype),
+            public_research_context=(
+                "Synthetic offline demonstration of Porter Five Forces for a regulated "
+                "financial-services technology decision."
+            ),
+        )
+        submission = AnalysisSubmission(
+            request=request,
+            mode=AnalysisMode.DEMO,
+            target=CompletionTarget(target),
+        )
+        with AnalysisService(Settings()) as service:
+            result = service.analyze(submission)
+    except (ValueError, ValidationError, AnalysisServiceError) as exc:
+        typer.echo(f"FAILED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _emit_result(result, as_json=as_json)
+
+
+@app.command()
+def analyze(
+    request_file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Canonical AnalysisSubmission JSON file.",
+        ),
+    ],
+    as_json: bool = typer.Option(False, "--json", help="Emit the complete result as JSON."),
+) -> None:
+    """Run live local-oMLX analysis with DuckDuckGo and captured public evidence."""
+
+    from porter_forces_ai.service import (
+        AnalysisMode,
+        AnalysisService,
+        AnalysisServiceError,
+        AnalysisSubmission,
+    )
+
+    try:
+        payload = json.loads(request_file.read_text(encoding="utf-8"))
+        submission = AnalysisSubmission.model_validate(payload).model_copy(
+            update={"mode": AnalysisMode.LIVE}
+        )
+        with AnalysisService(Settings()) as service:
+            result = service.analyze(submission)
+    except (OSError, json.JSONDecodeError, ValidationError, AnalysisServiceError) as exc:
+        typer.echo(f"FAILED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _emit_result(result, as_json=as_json)
+
+
+@app.command("run")
+def run_submission(
+    request_file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Canonical AnalysisSubmission JSON file; its mode is respected.",
+        ),
+    ],
+    as_json: bool = typer.Option(False, "--json", help="Emit the complete result as JSON."),
+) -> None:
+    """Run a canonical submission in its declared demo or live mode."""
+
+    from porter_forces_ai.service import AnalysisService, AnalysisServiceError, AnalysisSubmission
+
+    try:
+        submission = AnalysisSubmission.model_validate_json(
+            request_file.read_text(encoding="utf-8")
+        )
+        with AnalysisService(Settings()) as service:
+            result = service.analyze(submission)
+    except (OSError, ValidationError, AnalysisServiceError) as exc:
+        typer.echo(f"FAILED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _emit_result(result, as_json=as_json)
+
+
+@app.command()
+def runs(
+    limit: int = typer.Option(20, min=1, max=200),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable output."),
+) -> None:
+    """List persisted local analysis runs."""
+
+    from porter_forces_ai.repository import SQLiteRunRepository
+
+    settings = Settings()
+    with SQLiteRunRepository(settings.database_path) as repository:
+        rows = repository.list_runs(limit=limit)
+    if as_json:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "run_id": item.run_id,
+                        "status": item.status,
+                        "created_at": item.created_at.isoformat(),
+                        "updated_at": item.updated_at.isoformat(),
+                    }
+                    for item in rows
+                ],
+                indent=2,
+            )
+        )
+        return
+    if not rows:
+        typer.echo("No persisted runs.")
+        return
+    for item in rows:
+        typer.echo(f"{item.run_id}  {item.status:<20}  {item.updated_at.isoformat()}")
+
+
+@app.command()
+def show(
+    run_id: str = typer.Argument(..., help="Persisted run identifier."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the complete result as JSON."),
+) -> None:
+    """Show a completed run, hydrating its immutable result artifact."""
+
+    from porter_forces_ai.service import AnalysisService
+
+    with AnalysisService(Settings()) as service:
+        result = service.get_result(run_id)
+    if result is None:
+        typer.echo("FAILED: run has no completed analysis result", err=True)
+        raise typer.Exit(code=1)
+    _emit_result(result, as_json=as_json)
+
+
+@app.command()
+def serve(
+    reload: bool = typer.Option(False, help="Reload Python code during local development."),
+) -> None:
+    """Serve the loopback-only API used by the local dashboard."""
+
+    import uvicorn
+
+    settings = Settings()
+    uvicorn.run(
+        "porter_forces_ai.web:create_app",
+        factory=True,
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=reload,
+    )
+
+
+def _emit_result(result: object, *, as_json: bool) -> None:
+    from porter_forces_ai.service import AnalysisResult
+
+    validated = AnalysisResult.model_validate(result)
+    if as_json:
+        typer.echo(validated.model_dump_json(indent=2))
+        return
+    typer.echo(f"Run: {validated.run_id}")
+    typer.echo(f"Status: {validated.status.value}")
+    if validated.ralph_state is not None:
+        typer.echo(f"Ralph attempts: {len(validated.ralph_state.attempts)}")
+    if validated.quality_report is not None:
+        typer.echo(f"Draft valid: {validated.quality_report.draft_valid}")
+        typer.echo(f"Publishable: {validated.quality_report.publishable}")
+    for name, path in validated.artifact_paths.items():
+        typer.echo(f"{name}: {path}")
 
 
 if __name__ == "__main__":

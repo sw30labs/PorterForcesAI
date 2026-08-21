@@ -1,0 +1,18 @@
+{
+  "request": {
+    "question": "Should a global bank authorize a controlled generative-AI workflow now, and what happens if it waits eighteen months?",
+    "archetype": "global_bank",
+    "analysis_mode": "strategic_initiative",
+    "organization_name": "Illustrative Global Bank",
+    "industry_arena": "US and EU regulated banking knowledge workflows",
+    "geographies": ["United States", "European Union"],
+    "time_horizon_months": 36,
+    "audience": ["full_board", "cfo", "cro", "cio"],
+    "constraints": ["No customer-facing autonomy", "Exercise provider exit before scale"],
+    "public_research_context": "Public evidence about generative-AI adoption, technology suppliers, customer behavior, substitutes, entrants, and competitive investment in regulated global banking.",
+    "restricted_terms": ["Project Cedar"],
+    "internal_context": {"program": "Project Cedar", "note": "Illustrative local-only context."}
+  },
+  "mode": "live",
+  "target": "draft"
+}

@@ -156,12 +156,16 @@ metadata-service destinations at the operating-system or network layer.
 ### Evidence and prompt-injection containment
 
 Search snippets never become `EvidenceItem` instances. The application selects
-capture candidates round-robin across the five force-specific hit sets, rather
-than trusting the model to spend the global source budget. Captured content
-remains classified as `untrusted_external_content`; promotion requires source
-class, publisher, captured hash, excerpt, applicability, and quality values.
-Source classification and the conservative quality/freshness/applicability
-scores are policy-owned; the model does not supply them.
+capture candidates coverage-first across the five force-specific hit sets,
+rather than trusting the model to spend the global source budget. A zero-hit
+force fails before fetch. Each unique fetch, including a policy or network
+failure, consumes one slot from the fixed cap; retries target uncovered forces
+round-robin, then remaining slots fund balanced publisher-diverse enrichment.
+Captured content remains classified as `untrusted_external_content`; promotion
+requires source class, publisher, captured hash, excerpt, applicability, and
+quality values. Source classification and the conservative
+quality/freshness/applicability scores are policy-owned; the model does not
+supply them.
 
 Claims and explicit claim-evidence links must reconcile. Each link includes a
 `supporting_quote` that must occur exactly in the captured excerpt. Material fact

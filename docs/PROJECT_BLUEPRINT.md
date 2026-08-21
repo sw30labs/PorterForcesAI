@@ -370,10 +370,13 @@ A source can be promoted to `EvidenceItem` only after the application:
 - records publisher host, retrieval time, and declared applicability; and
 - extracts an exact quote locator for a supporting or contradicting claim link.
 
-The application chooses candidates round-robin across all five force-specific
-hit sets and prefers publisher diversity within that balance. The model cannot
-allocate the capture budget to only convenient sources. A live run fails if it
-cannot capture promotable evidence for every force.
+The application fails before fetch if any force has no registered candidate. It
+then uses a fixed unique fetch-attempt cap coverage-first: failed PDFs, HTTP
+responses, timeouts, or policy checks consume a slot, and later candidates retry
+uncovered forces round-robin. After all five forces have a capture, remaining
+slots are balanced for enrichment and publisher diversity. The model cannot
+allocate the capture budget to only convenient sources. A live run fails closed
+if the bounded attempts cannot capture promotable evidence for every force.
 
 The `EvidenceItem` schema already refuses public evidence without publisher,
 HTTP(S) URL, and content hash; it also enforces compatible origin/source-class

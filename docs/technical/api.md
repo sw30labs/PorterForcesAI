@@ -140,6 +140,10 @@ The updated `Settings` object is revalidated. A non-loopback endpoint remains
 rejected unless remote model use was explicitly enabled at process startup, and
 remote HTTP is never accepted.
 
+`maxSources` is the hard limit on unique source-fetch attempts, not a promise of
+that many successful captures. A rejected PDF, HTTP failure, timeout, or unsafe
+target consumes one slot. The accepted range remains 5–50.
+
 ### `POST /api/analyses`
 
 Creates an in-process background job. Demo mode uses labeled synthetic fixtures
@@ -190,12 +194,16 @@ that a present page represents the earlier information set. A current/future
 cutoff is carried into query planning; historical analysis needs a separately
 supplied dated archive, which this endpoint does not yet accept.
 
-The application allocates the capture budget round-robin across all five force
-candidate sets, preferring publisher diversity. It assigns source class and
-conservative quality/freshness/applicability scores from policy. Claim links need
-an exact quote from the capture and a lexical-alignment screen for material facts
-and inferences. These are provenance/relevance controls, not semantic-entailment
-or truth proof.
+Before fetching, the application fails if any force has no registered candidate.
+It then uses the fixed attempt budget coverage-first: uncovered forces receive
+round-robin retries after PDFs, HTTP failures, or other rejected captures, and
+each failed unique fetch consumes a slot. Once every force has a successful
+capture, remaining slots are allocated round-robin with publisher diversity.
+The application assigns source class and conservative
+quality/freshness/applicability scores from policy. Claim links need an exact
+quote from the capture and a lexical-alignment screen for material facts and
+inferences. These are provenance/relevance controls, not semantic-entailment or
+truth proof.
 
 Each force worker requests one parallel search batch; at most five calls execute,
 and excess calls return limit errors without preventing typed bundle synthesis.

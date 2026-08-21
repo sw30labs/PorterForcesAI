@@ -41,10 +41,13 @@ finish. Successful executions receive force-scoped sequence IDs and are
 synchronously stored before their tool results return. Concurrent executions are
 sorted by lineage, and partial discovery survives a later bundle failure.
 
-The application, not the research model, selects capture candidates round-robin
-across all five force-specific hit sets and prefers unused publisher hosts. It
-also owns the conservative live source classification and
-quality/freshness/applicability scores.
+The application, not the research model, selects capture candidates. It fails
+before fetch when any force has no candidate, then prioritizes successful
+coverage for uncovered forces round-robin. Every unique fetch attempt, including
+PDF, HTTP, timeout, and policy failures, consumes the fixed cap. After all five
+forces have a capture, remaining attempts are balanced across forces and prefer
+unused publisher hosts. The application also owns the conservative live source
+classification and quality/freshness/applicability scores.
 
 ```mermaid
 stateDiagram-v2

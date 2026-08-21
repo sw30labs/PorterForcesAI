@@ -119,6 +119,9 @@ Required automated cases are:
 | Safe first URL redirects to private host     | Redirect rejected before next request |
 | HTTPS redirects to HTTP                      | Rejected by default                   |
 | PDF or another non-text media type           | Rejected; explicit evidence gap       |
+| One force has no registered candidate        | Fail before any source fetch          |
+| Early PDF/403 has a later valid candidate    | Failed slot consumed; uncovered force backfilled within cap |
+| Capture-attempt cap exhausts before coverage | Fail closed; no additional fetch      |
 | Missing/disallowed content type              | Capture rejected                      |
 | Declared or streamed body exceeds limit      | Capture rejected                      |
 | HTML contains script/style content           | Excluded from extracted text          |
@@ -143,6 +146,12 @@ without preventing typed bundle synthesis, and that force-scoped lineage is
 stamped before the synchronous persistence callback. Service inspection and
 integration coverage must also preserve deterministic lineage ordering and the
 invariant that already committed discovery survives a later bundle failure.
+
+Capture scheduling tests use deterministic fakes to prove that every source ID
+is fetched at most once, failed attempts consume the configured cap, uncovered
+forces are retried round-robin, successful coverage precedes enrichment,
+publisher diversity remains preferred, zero-candidate forces cause no fetch,
+and successful captures remain durably recorded.
 
 ## Model qualification
 

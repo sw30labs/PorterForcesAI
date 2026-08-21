@@ -1075,7 +1075,7 @@ function SettingsView({
             </div>
           </Panel>
           <Panel eyebrow="PUBLIC RESEARCH" title="DuckDuckGo discovery">
-            <div className="form-grid two"><label className="field"><span>Search region</span><select value={settings.searchRegion} onChange={(event) => update("searchRegion", event.target.value)}><option value="us-en">United States · English</option><option value="uk-en">United Kingdom · English</option><option value="de-de">Germany · German</option><option value="wt-wt">Global · no region</option></select></label><label className="field"><span>Maximum captured sources</span><input type="number" min="5" max="50" value={settings.maxSources} onChange={(event) => update("maxSources", event.target.value)}/><small>API-enforced range · 5–50 per run.</small></label></div>
+            <div className="form-grid two"><label className="field"><span>Search region</span><select value={settings.searchRegion} onChange={(event) => update("searchRegion", event.target.value)}><option value="us-en">United States · English</option><option value="uk-en">United Kingdom · English</option><option value="de-de">Germany · German</option><option value="wt-wt">Global · no region</option></select></label><label className="field"><span>Unique capture-attempt limit</span><input type="number" min="5" max="50" value={settings.maxSources} onChange={(event) => update("maxSources", event.target.value)}/><small>Failures consume one of 5–50 per-run slots; uncovered forces receive bounded backfill.</small></label></div>
             <div className="policy-box"><Icon name="shield" size={17}/><div><b>Discovery is untrusted input</b><p>Search snippets are never promoted to evidence. The source page must be fetched, attributed, hashed and linked to a canonical claim.</p></div></div>
           </Panel>
         </div>
@@ -1084,7 +1084,7 @@ function SettingsView({
             <div className="connection-test"><div><span className={apiMode === "connected" ? "live-pip" : "status-dot"}/><b>{apiMode === "connected" ? "Local API responded" : apiMode === "checking" ? "Checking local API" : "Local API unavailable"}</b><small>{apiMode === "connected" ? "Settings were read from /api/settings" : "Edits cannot be applied until the service responds"}</small></div></div>
           </Panel>
           <Panel eyebrow="ACTIVE SESSION" title="API contract">
-            <dl className="runtime-list"><div><dt>Endpoint</dt><dd>{settings.endpoint}</dd></div><div><dt>Model</dt><dd>{settings.model}</dd></div><div><dt>Search region</dt><dd>{settings.searchRegion}</dd></div><div><dt>Capture limit</dt><dd>{settings.maxSources}</dd></div></dl>
+            <dl className="runtime-list"><div><dt>Endpoint</dt><dd>{settings.endpoint}</dd></div><div><dt>Model</dt><dd>{settings.model}</dd></div><div><dt>Search region</dt><dd>{settings.searchRegion}</dd></div><div><dt>Capture-attempt limit</dt><dd>{settings.maxSources}</dd></div></dl>
           </Panel>
         </aside>
       </div>

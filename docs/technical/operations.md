@@ -159,11 +159,15 @@ Live acquisition accepts HTML, XHTML, and plain-text pages only. PDF, office
 documents, images, and JavaScript-only pages are unsupported in the local
 profile. A capture rejection is not permission to cite a search snippet.
 
-The application selects captures round-robin across force-specific candidates
-and assigns conservative source classes and evidence scores from policy. Claim
-links must include an exact quote from the captured excerpt and pass the lexical
-alignment screen for facts/inferences. Operators must still judge semantic
-entailment, applicability, publisher authority, and truth.
+The application first checks that every force has a registered candidate. It
+then retries uncovered forces round-robin within the configured unique
+capture-attempt limit. PDF, HTTP, timeout, DNS-policy, and other capture failures
+consume a slot; they do not expand the limit or permit snippet use. After every
+force has one capture, remaining slots are balanced for enrichment and publisher
+diversity. Conservative source classes and evidence scores come from policy.
+Claim links must include an exact quote from the captured excerpt and pass the
+lexical-alignment screen for facts/inferences. Operators must still judge
+semantic entailment, applicability, publisher authority, and truth.
 
 Acquisition and calculation occur before synthesis. Queries and successful
 captures are persisted under an acquisition attempt as they occur. In live mode,

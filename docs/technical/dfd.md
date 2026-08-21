@@ -109,7 +109,7 @@ flowchart LR
     SEARCH[DuckDuckGo adapter]
     DDG[DuckDuckGo]
     REG[(Executed-query and hit ledger)]
-    SELECT[Force-balanced candidate selection<br/>with publisher diversity]
+    SELECT[Coverage-first candidate scheduler<br/>with hard attempt cap]
     FETCH{Safe capture boundary}
     HOST[Registered public host]
     CAP[(Content-addressed capture)]
@@ -155,9 +155,12 @@ Trust-state rules:
    records. Each link's supporting quote must occur exactly in the excerpt, and
    fact/inference links pass a lexical-alignment screen. Capture and alignment
    prove neither semantic entailment nor truth.
-7. Candidate capture is application-owned, round-robin across the five force
-   sets, and biased toward publisher diversity. Source class and conservative
-   scores are policy-owned rather than accepted from the model.
+7. Candidate capture is application-owned. A zero-candidate force fails before
+   fetch. Failed unique fetches consume the fixed attempt cap; later candidates
+   retry uncovered forces round-robin. After all forces have a capture, remaining
+   attempts are force-balanced and biased toward publisher diversity. Source
+   class and conservative scores are policy-owned rather than accepted from the
+   model.
 
 ## Level 2: model capability boundary
 

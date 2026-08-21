@@ -58,6 +58,8 @@ test("removes starter artifacts and declares the local API contract", async () =
   assert.match(workspace, /setApprovals\(projectApprovals\(details\?\.approvals\)\)/);
   assert.match(workspace, /statusToken === "failed"/);
   assert.match(workspace, /statusToken === "blocked"/);
+  assert.match(workspace, /Unique capture-attempt limit/);
+  assert.match(workspace, /Failures consume one of 5–50 per-run slots/);
   assert.doesNotMatch(workspace, /Run canary/);
   assert.doesNotMatch(workspace, /Restart demo run/);
   assert.doesNotMatch(workspace, /Demo analysis commissioned/);

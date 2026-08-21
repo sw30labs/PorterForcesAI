@@ -51,7 +51,10 @@ class Settings(BaseSettings):
         default=15,
         ge=5,
         le=50,
-        description="At least one independently captured source slot per Porter force.",
+        description=(
+            "Maximum unique public-source fetch attempts per run; failed attempts "
+            "consume a slot."
+        ),
     )
     capture_timeout_seconds: int = Field(default=20, ge=1, le=90)
     capture_max_bytes: int = Field(default=2_000_000, ge=10_000, le=10_000_000)

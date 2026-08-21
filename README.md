@@ -140,12 +140,17 @@ When finance-owned scenario or delay inputs are present, Ralph also verifies
 that the exact calculator outputs reach synthesis and the challenge, and that a
 wholly negative range is not obscured by an action recommendation.
 
-Live capture selection is application-owned and balanced across all five force
-candidate sets. Source class and conservative quality/freshness/applicability
-scores come from policy, not model claims. Each claim link must carry an exact
-quote from its captured excerpt and pass a conservative lexical-alignment screen
-for facts and inferences. That screen catches missing or obviously unrelated
-support; it is not semantic entailment or proof that a source is true.
+Live capture selection is application-owned and coverage-first across all five
+force candidate sets. `capture_max_sources` is a hard unique fetch-attempt cap:
+PDFs, 403s, and other capture failures consume a slot, while later candidates
+backfill uncovered forces round-robin within the same cap. Once every force has
+one successful capture, remaining slots are balanced for enrichment and
+publisher diversity. Source class and conservative
+quality/freshness/applicability scores come from policy, not model claims. Each
+claim link must carry an exact quote from its captured excerpt and pass a
+conservative lexical-alignment screen for facts and inferences. That screen
+catches missing or obviously unrelated support; it is not semantic entailment
+or proof that a source is true.
 
 Publication additionally requires Strategy, Finance, Technology, and Risk to
 approve the SHA-256 fingerprint of the exact current brief. Any material edit

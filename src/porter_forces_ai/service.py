@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -680,7 +680,6 @@ class AnalysisService:
         registered_by_force: dict[ForceName, list[str]] = {
             force: [] for force in FORCE_ORDER
         }
-        source_force: dict[str, ForceName] = {}
         source_diversity_key: dict[str, str] = {}
         source_order: dict[str, tuple[str, int]] = {}
         persisted_searches: dict[
@@ -723,7 +722,6 @@ class AnalysisService:
                 persisted_searches[query.query_id] = current
                 for hit in registered:
                     registered_by_force[query.force].append(hit.source_id)
-                    source_force[hit.source_id] = query.force
                     source_order[hit.source_id] = (query.query_id, hit.rank)
                     source_diversity_key[hit.source_id] = (
                         urlsplit(hit.url).hostname or hit.url
@@ -752,23 +750,42 @@ class AnalysisService:
             # another model call begins.
             persist_new_searches()
 
-        # Capture selection is application-owned and round-robin balanced. The
-        # generating model cannot consume the global source budget by nominating
-        # only convenient hits for one force.
-        source_ids = _balanced_source_ids(
-            {
-                force: sorted(
-                    source_ids,
-                    key=lambda source_id: source_order[source_id],
-                )
-                for force, source_ids in registered_by_force.items()
-            },
-            limit=self.settings.capture_max_sources,
-            diversity_keys=source_diversity_key,
+        evidence = self._capture_live_candidates(
+            request,
+            warnings,
+            ledger=ledger,
+            registered_by_force=registered_by_force,
+            source_order=source_order,
+            source_diversity_key=source_diversity_key,
         )
-        if not source_ids:
+        runtime.freeze_captured_evidence(evidence)
+        return runtime, frame, bundles, evidence
+
+    def _capture_live_candidates(
+        self,
+        request: DecisionRequest,
+        warnings: list[str],
+        *,
+        ledger: DiscoveryLedger,
+        registered_by_force: Mapping[ForceName, list[str]],
+        source_order: Mapping[str, tuple[str, int]],
+        source_diversity_key: Mapping[str, str],
+    ) -> list[EvidenceItem]:
+        """Capture force coverage first, then enrich, under one hard attempt cap."""
+
+        candidates = {
+            force: sorted(
+                registered_by_force.get(force, []),
+                key=lambda source_id: source_order[source_id],
+            )
+            for force in FORCE_ORDER
+        }
+        missing_candidates = [force for force in FORCE_ORDER if not candidates[force]]
+        if missing_candidates:
+            missing = ", ".join(force.value for force in missing_candidates)
             raise AnalysisServiceError(
-                "research returned no registered public source candidates"
+                "research returned no registered public source candidates for Porter "
+                f"forces: {missing}"
             )
 
         evidence: list[EvidenceItem] = []
@@ -777,14 +794,14 @@ class AnalysisService:
             timeout_seconds=self.settings.capture_timeout_seconds,
         )
         with SafeSourceCapture(ledger, policy=capture_policy) as capture_service:
-            captured_forces: set[ForceName] = set()
-            for source_id in source_ids:
+            def attempt_capture(_force: ForceName, source_id: str) -> bool:
                 try:
                     capture = capture_service.capture(source_id)
                 except SourceCaptureError as exc:
-                    warnings.append(f"Capture {source_id} skipped: {type(exc).__name__}: {exc}")
-                    continue
-                captured_forces.add(source_force[source_id])
+                    warnings.append(
+                        f"Capture {source_id} skipped: {type(exc).__name__}: {exc}"
+                    )
+                    return False
                 self.repository.record_capture(capture)
                 source_class = _conservative_source_class(capture.final_url)
                 quality_score, freshness_score, applicability_score = (
@@ -806,18 +823,15 @@ class AnalysisService:
                         ),
                     )
                 )
-        if not evidence:
-            raise AnalysisServiceError(
-                "none of the registered public sources could be safely captured"
+                return True
+
+            _capture_source_candidates(
+                candidates,
+                limit=self.settings.capture_max_sources,
+                diversity_keys=source_diversity_key,
+                attempt=attempt_capture,
             )
-        missing_force_capture = set(FORCE_ORDER) - captured_forces
-        if missing_force_capture:
-            missing = ", ".join(sorted(force.value for force in missing_force_capture))
-            raise AnalysisServiceError(
-                "captured-evidence coverage is incomplete for Porter forces: " + missing
-            )
-        runtime.freeze_captured_evidence(evidence)
-        return runtime, frame, bundles, evidence
+        return evidence
 
     def _persist_ralph_checkpoint(
         self,
@@ -1063,6 +1077,116 @@ def _balanced_source_ids(
         if not progressed:
             break
     return selected
+
+
+def _capture_source_candidates(
+    by_force: Mapping[ForceName, list[str]],
+    *,
+    limit: int,
+    diversity_keys: Mapping[str, str] | None,
+    attempt: Callable[[ForceName, str], bool],
+) -> tuple[str, ...]:
+    """Attempt bounded captures, prioritizing one successful source per force."""
+
+    if limit < len(FORCE_ORDER):
+        raise AnalysisServiceError(
+            "capture attempt limit must provide at least one slot per Porter force"
+        )
+    remaining = {force: list(by_force.get(force, [])) for force in FORCE_ORDER}
+    missing_candidates = [force for force in FORCE_ORDER if not remaining[force]]
+    if missing_candidates:
+        missing = ", ".join(force.value for force in missing_candidates)
+        raise AnalysisServiceError(
+            "research returned no registered public source candidates for Porter "
+            f"forces: {missing}"
+        )
+
+    assigned_sources: dict[str, ForceName] = {}
+    for force in FORCE_ORDER:
+        for candidate_id in remaining[force]:
+            prior_force = assigned_sources.setdefault(candidate_id, force)
+            if prior_force != force:
+                raise AnalysisServiceError(
+                    "a capture candidate was assigned to multiple Porter forces"
+                )
+    used_diversity_keys: set[str] = set()
+    attempted: list[str] = []
+    attempted_ids: set[str] = set()
+    covered: set[ForceName] = set()
+
+    def next_source(force: ForceName) -> str | None:
+        candidates = remaining[force]
+        while candidates and candidates[0] in attempted_ids:
+            candidates.pop(0)
+        if not candidates:
+            return None
+        selected_index = 0
+        if diversity_keys is not None:
+            selected_index = next(
+                (
+                    index
+                    for index, source_id in enumerate(candidates)
+                    if source_id not in attempted_ids
+                    and diversity_keys.get(source_id, source_id)
+                    not in used_diversity_keys
+                ),
+                0,
+            )
+        source_id = candidates.pop(selected_index)
+        if source_id in attempted_ids:
+            return next_source(force)
+        attempted.append(source_id)
+        attempted_ids.add(source_id)
+        if diversity_keys is not None:
+            used_diversity_keys.add(diversity_keys.get(source_id, source_id))
+        return source_id
+
+    # Coverage phase: retry only uncovered forces, in stable force order. A
+    # failed fetch consumes one attempt but leaves later candidates eligible.
+    while len(covered) < len(FORCE_ORDER) and len(attempted) < limit:
+        progressed = False
+        for force in FORCE_ORDER:
+            if force in covered:
+                continue
+            next_id = next_source(force)
+            if next_id is None:
+                missing = ", ".join(
+                    item.value for item in FORCE_ORDER if item not in covered
+                )
+                raise AnalysisServiceError(
+                    "captured-evidence coverage is incomplete for Porter forces: "
+                    + missing
+                )
+            progressed = True
+            if attempt(force, next_id):
+                covered.add(force)
+            if len(attempted) >= limit:
+                break
+        if not progressed:
+            break
+
+    missing_coverage = [force for force in FORCE_ORDER if force not in covered]
+    if missing_coverage:
+        missing = ", ".join(force.value for force in missing_coverage)
+        raise AnalysisServiceError(
+            "captured-evidence coverage is incomplete for Porter forces: " + missing
+        )
+
+    # Enrichment phase: once all forces have evidence, use any remaining attempt
+    # slots round-robin while continuing to prefer unused publisher hosts.
+    while len(attempted) < limit:
+        progressed = False
+        for force in FORCE_ORDER:
+            next_id = next_source(force)
+            if next_id is None:
+                continue
+            progressed = True
+            attempt(force, next_id)
+            if len(attempted) >= limit:
+                break
+        if not progressed:
+            break
+    return tuple(attempted)
 
 
 def _application_status(status: RalphStatus) -> ApplicationRunStatus:

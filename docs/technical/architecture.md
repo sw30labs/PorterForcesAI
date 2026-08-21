@@ -214,10 +214,13 @@ stateDiagram-v2
 `CapturedContent` remains labeled `untrusted_external_content`. Its hashes make
 the captured representation detectable and reproducible; they do not attest to
 publisher identity or truth. Capture selection is application-owned and
-round-robin across the five force-specific candidate sets so one force cannot
-consume the global source budget. Source class and the conservative quality,
-freshness, and applicability values are also assigned by application policy,
-not accepted from model output.
+coverage-first across the five force-specific candidate sets. A force with no
+registered candidate fails before any fetch. During capture, failures consume
+the fixed unique-attempt budget and later candidates retry uncovered forces
+round-robin. Only after all five forces have a successful capture do remaining
+slots fund balanced, publisher-diverse enrichment. Source class and the
+conservative quality, freshness, and applicability values are also assigned by
+application policy, not accepted from model output.
 
 Every claim/evidence link carries a `supporting_quote` that must be an exact
 substring of the captured excerpt. For fact and inference claims, the quality

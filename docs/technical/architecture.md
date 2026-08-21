@@ -192,12 +192,15 @@ are deterministically sorted by that lineage before capture selection.
 | Profile      | Model/network behavior                                                             | Intended use                                                             |
 | ------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `demo`       | Deterministic synthetic fixture; no model and no public network                    | UI development, tests, demonstrations                                    |
-| `live-test`  | Local oMLX model `Qwen3.8-27B-4bit`; DuckDuckGo and registered-page capture        | Fast local integration and acceptance testing                            |
-| `production` | Approved local oMLX DeepSeek model profile; DuckDuckGo and registered-page capture | Controlled production-like runs after model and governance qualification |
+| `live-test`  | Local oMLX candidate `Qwen3.8-27B-4bit`; DuckDuckGo and registered-page capture      | Fast integration after representative-contract qualification             |
+| `production` | Intended local oMLX DeepSeek candidate; DuckDuckGo and registered-page capture        | Controlled runs only after model and governance qualification            |
 
 Model selection is configuration, not an automatic fallback. Every selected
 model must appear in authenticated `/v1/models` and pass forced-tool-call and
-JSON-schema canaries before a live analysis.
+JSON-schema canaries before a live analysis. Those small probes are necessary but
+not sufficient: the exact checkpoint/server pair must also pass representative
+application schemas and a bounded end-to-end run. The current Qwen evidence is
+recorded in [local release validation](release-validation.md).
 
 ## Evidence lifecycle
 

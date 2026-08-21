@@ -11,7 +11,7 @@ corrections and links.
 | [002](002-evidence-snapshot-boundary.md) | Accepted | Treat search as discovery and promote only safely captured page content.           |
 | [003](003-sqlite-run-store.md)           | Accepted | Use a local SQLite audit store with append-only provenance records.                |
 | [004](004-local-api-and-ui.md)           | Accepted | Expose a loopback FastAPI API and a separate vinext analyst console.               |
-| [005](005-model-profiles.md)             | Accepted | Qualify exact oMLX model profiles; use Qwen for tests and DeepSeek for production. |
+| [005](005-model-profiles.md)             | Accepted | Qualify exact oMLX profiles; Qwen/DeepSeek remain candidates until their full gates pass. |
 | [006](006-human-publication-gate.md)     | Accepted | Require content-bound, cross-functional approval before publication.               |
 
 ## Lifecycle

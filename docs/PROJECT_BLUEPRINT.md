@@ -263,6 +263,13 @@ The included `porter-forces doctor --live-canary` implements those probes. Model
 size should be selected from measured unified memory, context, tool-call
 reliability, and structured-output accuracy—not from popularity.
 
+The probes are deliberately small and are not profile qualification by
+themselves. The exact checkpoint/server combination must also satisfy the actual
+decision-frame and downstream artifact schemas plus one bounded live run. In the
+2026-08-21 release evidence, Qwen passed the small probes but failed the
+representative frame contract before research; see
+[local release validation](technical/release-validation.md).
+
 ### Current verified dependency baseline
 
 | Component | Baseline | Role |

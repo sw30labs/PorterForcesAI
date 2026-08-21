@@ -23,7 +23,7 @@ Define explicit profiles and require exact model IDs:
 | Profile      | Exact model policy                                                                                        | Purpose                                         |
 | ------------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `demo`       | No model                                                                                                  | Deterministic offline development and tests     |
-| `live-test`  | `Qwen3.8-27B-4bit`                                                                                        | Fast local integration, UI, and acceptance runs |
+| `live-test`  | `Qwen3.8-27B-4bit`; candidate until the representative contract passes                                | Fast local integration, UI, and acceptance runs |
 | `production` | Governance-approved DeepSeek oMLX ID; current intended inventory ID is `DeepSeek-V4-Flash-0731-MXFP4-MLX` | Controlled production-like analysis             |
 
 ```mermaid
@@ -68,6 +68,22 @@ Before an exact model/profile combination is used:
 Model qualification demonstrates application compatibility. It does not certify
 truth, absence of bias, legal compliance, or suitability for a particular board
 decision.
+
+## Current qualification evidence
+
+On 2026-08-21, the installed exact Qwen ID passed inventory, forced tool calling,
+and the small strict JSON-schema canary. It did not produce a valid
+`DecisionFrame` for the representative live request: the JSON-schema response was
+free-form/repetitive text, while forced-function variants exceeded their hard
+bounds. Disabling or bounding thinking at the request level did not change that
+result. The run failed before research and persisted only its failure state.
+
+Accordingly, Qwen remains the requested checked-in test candidate but is not
+application-qualified on that installed model/server combination. The small
+doctor canary must not be presented as full qualification. See
+[local release validation](../release-validation.md) for the bounded results.
+DeepSeek likewise remains unqualified until it passes the same representative
+contracts and full-run gate; there is no automatic fallback between them.
 
 ## Alternatives considered
 
@@ -120,4 +136,5 @@ Costs and limitations:
 Use `porter-forces doctor --live-canary` with the profile's exact environment.
 Archive the machine-readable result with evaluation outputs. Tests mock model
 protocol behavior; a pre-release operator also runs at least one bounded live
-analysis on Qwen and the intended DeepSeek profile.
+analysis on Qwen and the intended DeepSeek profile. A protocol-canary pass plus a
+representative-contract failure is a failed profile qualification.

@@ -94,13 +94,21 @@ PFA_LLM_BASE_URL=http://127.0.0.1:8000/v1
 PFA_LLM_API_KEY=test
 ```
 
-Verify inventory, forced tool calling, and JSON-schema output before a live run:
+Verify inventory, forced tool calling, and a small JSON-schema response before a
+live run:
 
 ```bash
 uv run porter-forces doctor --live-canary
 ```
 
-Then run the live example:
+That protocol canary is necessary, not sufficient. In the 2026-08-21 release
+validation, the exact Qwen ID passed the small canaries but the installed
+model/oMLX combination failed closed on the representative `DecisionFrame`
+contract. Treat it as a live-test candidate until the full bounded acceptance
+run passes; see [local release validation](docs/technical/release-validation.md).
+
+When a checkpoint/server change is ready for a bounded, non-confidential
+qualification rerun, use the live example:
 
 ```bash
 uv run porter-forces analyze examples/global-bank-ai-adoption.live.json
@@ -185,7 +193,7 @@ flowchart TB
     LG --> GATE[Evidence, communication, economics gates]
     SVC --> DB[(SQLite WAL audit store)]
     SVC --> FILES[Local memo, JSON, and CSV artifacts]
-    OMLX[Local oMLX: Qwen test / DeepSeek production] --> LG
+    OMLX[Local oMLX candidates:<br/>Qwen live-test / DeepSeek production] --> LG
     OMLX --> DA
 ```
 
@@ -230,5 +238,6 @@ external pages.
 - [Security model](docs/technical/security.md)
 - [Operations](docs/technical/operations.md)
 - [Testing](docs/technical/testing.md)
+- [Release validation](docs/technical/release-validation.md)
 - [Architecture decisions](docs/technical/adr/README.md)
 - [Product blueprint](docs/PROJECT_BLUEPRINT.md)

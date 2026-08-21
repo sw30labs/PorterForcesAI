@@ -160,9 +160,10 @@ and successful captures remain durably recorded.
 
 ## Model qualification
 
-The test profile is the exact oMLX ID `Qwen3.8-27B-4bit`. The production profile
-uses the approved DeepSeek ID exposed by that oMLX installation. Do not qualify a
-family name or assume aliases are stable.
+The live-test candidate is the exact oMLX ID `Qwen3.8-27B-4bit`. The intended
+production candidate is the governance-selected DeepSeek ID exposed by that oMLX
+installation. Neither becomes qualified merely by appearing in inventory. Do not
+qualify a family name or assume aliases are stable.
 
 Run inventory and canaries:
 
@@ -184,6 +185,12 @@ Then run one bounded live analysis with a non-confidential public context and
 inspect its recorded queries, candidate reconciliation, captures, evidence
 hashes, claim links, quality findings, and Ralph manifest. Model canaries prove
 protocol capability, not answer quality.
+
+For this release, the exact Qwen checkpoint passed the small protocol canaries
+but failed the representative `DecisionFrame` contract before research. That is
+a failed live-profile qualification, not an application test exception; the
+bounded timings and empty downstream lineage are recorded in
+[local release validation](release-validation.md).
 
 ## API acceptance
 
@@ -233,9 +240,11 @@ A local release is acceptable when:
 2. UI lint, build, and rendered-HTML tests pass;
 3. database migrations succeed from an empty file and health reports WAL/FK;
 4. deterministic demo produces all canonical artifacts;
-5. the chosen oMLX profile passes live canaries;
-6. a live run either produces captured, traceable evidence or fails explicitly
-   with evidence gaps—never with snippet/model-prior claims presented as facts;
+5. any oMLX profile declared qualified passes small canaries, representative
+   application contracts, and a bounded end-to-end run;
+6. every attempted live run fails explicitly on a model contract before research
+   or, once research starts, produces captured traceable evidence or explicit
+   evidence gaps—never snippet/model-prior claims presented as facts;
 7. browser QA covers all analyst-console views;
 8. documentation links and Mermaid fences validate;
 9. the worktree contains no secrets or generated runtime database/artifacts.

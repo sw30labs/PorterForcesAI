@@ -39,9 +39,10 @@ PFA_ALLOW_REMOTE_MODEL_ENDPOINT=false
 ```
 
 Use the real local oMLX key if the server requires one. The value `test` is only
-a development placeholder. Production uses an explicitly qualified DeepSeek
-model ID from that server's `/v1/models` inventory; never assume a friendly name
-or silently fall back to Qwen.
+a development placeholder. The intended production candidate is a DeepSeek ID
+from that server's `/v1/models` inventory; use it only after explicit
+qualification, never assume a friendly name, and never silently fall back to
+Qwen.
 
 ## Start sequence
 
@@ -110,7 +111,10 @@ PFA_LLM_MODEL=Qwen3.8-27B-4bit uv run porter-forces doctor --live-canary
 
 The command must show the selected model in inventory and both tool-calling and
 structured-output canaries as true. Do not proceed with a live run if either
-canary fails. Demo mode remains available.
+canary fails. A pass proves only the small protocol probes; qualify the actual
+decision-frame and downstream schemas plus one bounded end-to-end run before
+board use. The current Qwen result is recorded in
+[local release validation](release-validation.md). Demo mode remains available.
 
 ### Service readiness
 
@@ -319,13 +323,17 @@ source bodies, or entire briefs by default.
   `PFA_LLM_MODEL`.
 - Do not substitute another model automatically.
 
-### Tool or JSON-schema canary fails
+### Tool, JSON-schema, or representative contract fails
 
 - Confirm the exact chat template/model combination supports tool calls and
   strict structured output.
 - Inspect oMLX server logs without exposing prompt content.
 - Reduce model concurrency and retry the explicit canary.
-- Keep live analysis disabled until qualified.
+- Do not raise timeouts or accept free-form text as a typed artifact merely to
+  obtain a green run.
+- Keep board/operational live use disabled. Permit only bounded,
+  non-confidential qualification reruns until the representative schema and full
+  gate qualify the exact checkpoint/server combination.
 
 ### DuckDuckGo is unavailable
 

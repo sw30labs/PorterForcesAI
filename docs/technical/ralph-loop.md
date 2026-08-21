@@ -1,8 +1,10 @@
 # Ralph goal-supervisor loop
 
-The Ralph supervisor wraps a complete analysis StateGraph. It runs fresh
-attempts until an independent evaluator verifies explicit acceptance criteria,
-or until the run reaches a human decision, a hard limit, or a provable stall.
+The Ralph supervisor wraps a complete analysis StateGraph. Its typed `step`
+transition runs fresh attempts until an independent evaluator verifies explicit
+acceptance criteria, or until the run reaches a human decision, a hard limit, or
+a provable stall. The same transition can run as a compiled meta-StateGraph or,
+as in the local service, one durably persisted step at a time.
 
 It does **not** guarantee that a strategy is objectively true. It guarantees
 that the declared, deterministic definition of done was enforced and that the
@@ -16,7 +18,8 @@ flowchart TD
     L --> A[Allocate fresh attempt ID<br/>and LangGraph thread ID]
     A --> G[Invoke analysis StateGraph]
     G --> E[Independent deterministic evaluator]
-    E --> H{Human judgment<br/>required?}
+    E --> K[Persist attempt, goal rows,<br/>and Ralph checkpoint]
+    K --> H{Human judgment<br/>required?}
     H -- Yes --> P[Pause: human_required]
     H -- No --> C{All required<br/>criteria pass?}
     C -- Yes, draft target --> D[achieved_draft]
@@ -109,6 +112,7 @@ from porter_forces_ai.ralph import (
     GoalCriterion,
     RalphSupervisor,
 )
+from porter_forces_ai.evaluation import evidence_snapshot_id
 
 supervisor = RalphSupervisor(
     analysis_graph,
@@ -124,7 +128,7 @@ state = supervisor.new_state(
             verification_method="evaluate_brief quality gate",
         ),
     ),
-    evidence_snapshot_id=evidence_ledger.snapshot_id,
+    evidence_snapshot_id=evidence_snapshot_id(evidence_ledger.evidence),
     target=CompletionTarget.DRAFT,
     max_attempts=4,
     max_budget_units=12,
@@ -133,10 +137,18 @@ state = supervisor.new_state(
 result = supervisor.run(state)
 ```
 
-For checkpointed orchestration, call `supervisor.build_meta_graph()` and invoke
-the returned compiled StateGraph with `{"ralph_state": state}`. Each nested
-analysis execution receives a new `configurable.thread_id`; the meta-graph may
-use a separate checkpointer and thread.
+`supervisor.build_meta_graph()` compiles the same step contract as a LangGraph
+StateGraph and accepts `{"ralph_state": state}`. Each nested analysis execution
+receives a new `configurable.thread_id`; callers may give that graph a separate
+checkpointer and thread.
+
+The implemented application service deliberately calls `supervisor.step`
+inside a bounded Python loop. After every completed step it commits the database
+attempt, goal results, and immutable `ralph_checkpoint` before allowing another
+retry. Evidence acquisition has its own preceding database attempt and is
+finished as `evidence_frozen`. This is durable audit recovery, not continuation
+of a half-finished model invocation: API startup marks abandoned nonterminal
+runs failed and tells the operator to start a new run from the persisted request.
 
 ## Evaluator rules
 
@@ -156,6 +168,20 @@ An evaluator should use deterministic quality gates, canonical ledgers,
 calculation checks, and approval fingerprints. An LLM critique may produce
 candidate issues, but it must not be the authority that changes Ralph status.
 
+The implemented draft definition of done checks the decision contract, all five
+forces, evidence/claim integrity, board-decision completeness, fidelity to the
+user question and supplied market boundary, audience-specific analogies, and a
+canonical contrary basis shared by the challenge and board-visible dissent. If
+finance-owned scenario or delay calculations exist, an additional criterion
+checks that the exact values reach synthesis and the challenge and that wholly
+negative cases are described conservatively. Publication adds exact-content
+human approval.
+
+Evidence integrity requires each claim link's `supporting_quote` to occur
+verbatim in the captured excerpt and applies a conservative lexical-alignment
+screen for material facts and inferences. That is a locator/relevance control,
+not an independent semantic-entailment judgment or proof of source truth.
+
 ## Stall and budget semantics
 
 A gap fingerprint hashes the sorted criterion IDs, outcomes, and explicit
@@ -165,14 +191,22 @@ fingerprints blocks the run.
 
 Each report declares deterministic `budget_units_used`. The supervisor records
 the consumed amount in the immutable attempt manifest and will not retry at or
-above `max_budget_units`. Actual token and wall-clock observability can be
-translated into units by the evaluator or runtime adapter.
+above `max_budget_units`. The application evaluator currently charges one unit
+per completed analysis attempt; this is a retry budget, not measured tokens,
+currency, or wall-clock time.
 
 ## Human pause
 
 `human_required` is a terminal result for the current invocation, not a failed
-retry. Typical causes include missing finance-owned assumptions, legal or risk
-acceptance, ambiguous scope, or publication approval. Continuing after human
-input should create a new evidence snapshot and Ralph run when the evidence
-universe changes; otherwise, a future explicit resume API may retain the same
-snapshot while recording the human decision as a new immutable artifact.
+retry. In the implemented publication flow it means that an otherwise valid
+exact brief still lacks one or more Strategy, Finance, Technology, or Risk
+approvals. Approvals are appended outside generation and recompute the
+publication gate for that same immutable brief. A rejection blocks the current
+revision and requires a new content revision/run; it is never treated as an
+automated writing instruction.
+
+Ambiguous live scope and acquisition/model failures fail explicitly rather than
+masquerading as human pauses. Missing finance inputs remain visibly missing and
+the economics criterion is omitted; the model may not invent ROI. Evidence
+refresh or any material input change creates a new run and snapshot. There is no
+general pause/resume endpoint in the local API.

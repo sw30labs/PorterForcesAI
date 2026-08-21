@@ -46,16 +46,29 @@ The stable resource surface is:
 - `GET /api/health`;
 - `GET /api/dashboard`;
 - `GET /api/settings` with secrets redacted;
+- `PUT /api/settings` for the bounded, session-scoped in-memory model/search
+  subset;
 - `POST /api/analyses`;
 - `GET /api/runs`;
 - `GET /api/runs/{run_id}`;
 - `GET /api/runs/{run_id}/artifacts`;
+- `GET /api/runs/{run_id}/artifacts/{artifact_name}` for the immutable memo or
+  evidence register only;
 - `POST /api/runs/{run_id}/approvals`.
 
-Run creation is asynchronous and the UI polls bounded status resources. The
-standard launcher binds both services to loopback, validates local Host/Origin,
-and emits the browser URL. The UI build tooling may support other targets, but
-no cloud deployment is part of this decision.
+Run creation is asynchronous and the UI polls bounded status resources. The API
+uses one in-process worker; queued job state before service-run creation is not
+durable. Acquisition records and every completed Ralph step become durable once
+the service reaches those boundaries. At startup, nonterminal persisted runs are
+failed closed rather than resumed.
+
+There is no backend pause/resume endpoint. A client must not represent a local
+UI-only toggle as a durable workflow transition. Reviewer approval is the only
+post-analysis state-changing workflow in this resource surface.
+
+The standard launcher binds both services to loopback, validates local
+Host/Origin, and emits the browser URL. The UI build tooling may support other
+targets, but no cloud deployment is part of this decision.
 
 The visual language follows the local Contingency Atlas reference: dark layered
 surfaces, restrained cyan/teal accents, compact audit-oriented cards, explicit
@@ -103,9 +116,14 @@ Costs and limitations:
 - Development uses two local processes and a configured API origin/proxy.
 - Loopback is not authentication; Host/Origin/CORS controls remain required.
 - Polling is intentionally simpler than streaming but adds bounded repeated reads.
+- API shutdown drains the running worker and cancels work that has not started;
+  a crash is handled by startup fail-closed recovery, not computation resume.
 - A public deployment cannot reuse this security assumption unchanged.
 - UI demo fixtures must be visibly distinguished from repository-backed live
   evidence.
+- The public artifact API serves hash-verified SQLite payloads. Mutable local
+  rendered files, including the sensitive audit sidecar, are outside the browser
+  download contract.
 
 ## Verification
 

@@ -26,8 +26,8 @@ Separate draft validity from publication authority.
   still required.
 - `publishable` means the draft remains valid and Strategy, Finance, Technology,
   and Risk have each approved the exact current brief fingerprint.
-- `blocked` means a hard criterion, budget, attempt, or stall condition prevents
-  completion.
+- `blocked` means a hard criterion, budget, attempt, stall condition, or current
+  reviewer rejection prevents completion.
 
 ```mermaid
 flowchart TD
@@ -39,7 +39,9 @@ flowchart TD
     Q -- Yes --> T[Technology decision]
     Q -- Yes --> R[Risk decision]
     H --> S & F & T & R
-    S & F & T & R --> C{All approve exact hash and no current rejection?}
+    S & F & T & R --> J{Any rejection for exact hash?}
+    J -- Yes --> X[blocked; new revision required]
+    J -- No --> C{All four exact approvals present?}
     C -- No --> U[human_required]
     C -- Yes --> P[publishable]
 ```
@@ -51,8 +53,8 @@ artifact and verifies that hashes match before insertion.
 Any content change produces a new fingerprint. Earlier decisions remain in the
 audit log but become stale and have no authority over the new revision. If a
 role has both an approval and rejection for the current fingerprint, the current
-rejection prevents publication until governance resolves the conflict with a
-new reviewed revision or explicit policy-supported workflow.
+rejection changes the run to `blocked`. This local release has no workflow for
+overriding that decision in place; a new content revision/run must be reviewed.
 
 For a Ralph publishability target, the approval criterion is non-retryable by
 generation. Missing approvals produce `human_required`; the model must not keep
@@ -123,12 +125,12 @@ Automated tests prove:
 
 - zero through three current approvals do not publish;
 - all four current approvals plus a valid draft publish;
-- any current rejection prevents publication;
+- any current rejection changes the run to `blocked` and prevents publication;
 - a modified brief makes prior approvals stale;
 - artifact/run/hash mismatch is rejected by the repository;
 - approval rows cannot be updated or deleted;
-- the Ralph publication criterion routes incomplete review to
-  `human_required`, not another model retry.
+- the Ralph publication criterion routes missing approvals to `human_required`,
+  not another model retry.
 
 The UI shows the exact fingerprint and revision under review, missing roles,
 stale approvals, rejections, and the current `draft_valid`/`publishable` state.

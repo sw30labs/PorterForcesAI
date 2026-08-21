@@ -1,7 +1,7 @@
 # Technical architecture
 
 Status: implemented core with a local application boundary  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 PorterForcesAI is a local-first decision-support system for financial-services
 boards. It turns a strategic question into a decision contract, researches
@@ -29,9 +29,13 @@ It is not an autonomous financial, legal, regulatory, or investment adviser.
 6. **Draft validity is not publication authority.** Publication requires a
    valid brief plus content-bound approvals from Strategy, Finance, Technology,
    and Risk.
-7. **Local is the default trust boundary.** The API, UI, SQLite database, and
-   oMLX endpoint bind to loopback unless an operator deliberately approves a
-   different deployment.
+7. **Local is the default trust boundary.** The API and UI bind to loopback, and
+   the default oMLX endpoint is loopback. SQLite and generated files remain on
+   the local filesystem; local does not mean encrypted or authenticated.
+8. **Checkpoints are audit boundaries, not magic resumption.** Acquisition
+   provenance is committed as it occurs and every completed Ralph attempt has a
+   durable manifest. Startup marks interrupted nonterminal work failed; it does
+   not resume a half-finished model or network call.
 
 ## Component view
 
@@ -45,7 +49,8 @@ flowchart TB
     subgraph Application[Local Python application]
         API[FastAPI adapter]
         SVC[Analysis service]
-        RALPH[Ralph meta-supervisor]
+        ACQUIRE[Durable acquisition coordinator]
+        RALPH[Ralph supervisor loop]
         GRAPH[LangGraph analysis StateGraph]
         EVAL[Deterministic goal evaluator]
         CALC[Economics calculators]
@@ -75,18 +80,20 @@ flowchart TB
     UI --> API
     CLI --> SVC
     API --> SVC
-    SVC --> RALPH
-    RALPH --> GRAPH
-    GRAPH --> RUNTIME
-    RUNTIME --> OMLX
-    RUNTIME --> AGENT
+    SVC --> ACQUIRE
+    ACQUIRE --> AGENT
     AGENT --> QUERY
     QUERY --> DDG
     QUERY --> DISCOVERY
     DISCOVERY --> CAPTURE
     CAPTURE --> WEB
-    CAPTURE --> GRAPH
-    GRAPH --> CALC
+    CAPTURE --> ACQUIRE
+    ACQUIRE --> CALC
+    ACQUIRE --> RALPH
+    CALC --> RALPH
+    RALPH --> GRAPH
+    GRAPH --> RUNTIME
+    RUNTIME --> OMLX
     GRAPH --> GATE
     GRAPH --> EVAL
     EVAL --> RALPH
@@ -94,8 +101,7 @@ flowchart TB
     SVC --> RENDER
     SVC <--> REPO
     RENDER --> FILES
-    REPO --> API
-    FILES --> API
+    REPO -->|hash-verified public payloads| API
 ```
 
 The model boundary and public-network boundary are independent. Local inference
@@ -105,8 +111,10 @@ correct. Both outputs still pass application-owned contracts and gates.
 
 ## Two-level orchestration
 
-The inner graph is responsible for producing one internally coherent candidate.
-The outer loop decides whether that candidate satisfies explicit goals.
+The service acquires and freezes evidence once, calculates any finance-owned
+ranges, and then enters Ralph. The inner graph is responsible for producing one
+internally coherent candidate from that fixed input. The outer loop decides
+whether the candidate satisfies explicit goals.
 
 ```mermaid
 flowchart LR
@@ -126,6 +134,12 @@ Each Ralph attempt uses a fresh nested LangGraph thread and the same immutable
 retry cannot silently change its evidence universe. A deliberate evidence
 refresh starts a new Ralph run.
 
+The production service calls one `RalphSupervisor.step` at a time so it can
+persist the attempt manifest, latest state checkpoint, and current goal rows
+before another retry begins. `RalphSupervisor.build_meta_graph()` exposes the
+same transition contract as a compiled StateGraph for other integrations; the
+service does not depend on an in-memory outer-graph checkpoint for recovery.
+
 The analysis StateGraph follows this sequence:
 
 ```mermaid
@@ -133,7 +147,7 @@ flowchart TD
     START([Start]) --> FRAME[Frame decision]
     FRAME --> SCOPE{Scope and egress context valid?}
     SCOPE -- No --> STOP[Fail closed for clarification]
-    SCOPE -- Yes --> FANR[Fan out five research assignments]
+    SCOPE -- Yes --> FANR[Fan out five cached research assignments]
     FANR --> R1[Entrants]
     FANR --> R2[Suppliers]
     FANR --> R3[Buyers]
@@ -156,9 +170,18 @@ flowchart TD
     QUALITY -->|invalid and repair exhausted| DONE
 ```
 
-The inner repair is for artifact defects such as invalid references. Ralph is
-the overarching goal loop. Neither loop is a claim that a strategic forecast is
-true.
+In live mode, Deep Agents and DuckDuckGo have already completed during durable
+acquisition. The graph's research nodes read the five frozen research bundles;
+they do not search again on each Ralph retry. The inner repair is for artifact
+defects such as invalid references. Ralph is the overarching goal loop. Neither
+loop is a claim that a strategic forecast is true.
+
+Each force research worker is instructed to issue exactly one parallel batch of
+no more than five focused searches. The tool middleware executes at most five
+search calls; excess calls return explicit limit errors while leaving the model
+able to emit the typed `ResearchBundle`. Query IDs are stamped with force-scoped
+sequence lineage before execution records are persisted, and concurrent results
+are deterministically sorted by that lineage before capture selection.
 
 ## Runtime profiles
 
@@ -182,7 +205,7 @@ stateDiagram-v2
     RegisteredCandidate --> CapturedContent: DNS and fetch policy pass
     RegisteredCandidate --> Rejected: unsafe URL or fetch limit
     CapturedContent --> EvidenceItem: classify and select excerpt
-    EvidenceItem --> ClaimLink: explicit stance and entailment
+    EvidenceItem --> ClaimLink: exact quote locator + lexical alignment screen
     ClaimLink --> BoardPoint: canonical claim ID referenced
     SearchHit --> Rejected: snippet cannot be promoted
     CapturedContent --> Rejected: no applicable support
@@ -190,15 +213,45 @@ stateDiagram-v2
 
 `CapturedContent` remains labeled `untrusted_external_content`. Its hashes make
 the captured representation detectable and reproducible; they do not attest to
-publisher identity or truth. Evidence scores are review-prioritization signals,
-not probabilities.
+publisher identity or truth. Capture selection is application-owned and
+round-robin across the five force-specific candidate sets so one force cannot
+consume the global source budget. Source class and the conservative quality,
+freshness, and applicability values are also assigned by application policy,
+not accepted from model output.
+
+Every claim/evidence link carries a `supporting_quote` that must be an exact
+substring of the captured excerpt. For fact and inference claims, the quality
+gate also applies a conservative lexical-alignment screen between the claim and
+that quote. This catches missing, fabricated, and obviously unrelated locators;
+it is not independent semantic entailment, publisher authentication, or proof
+that either the source or claim is true. Evidence scores are review-priority
+signals, not probabilities.
+
+The local capture profile accepts HTML, XHTML, and plain text only. It cannot
+extract PDF, office-document, image, or JavaScript-rendered source content. A
+rejected PDF remains an evidence gap until a separately sandboxed extractor is
+designed and approved.
+
+The DuckDuckGo adapter treats DDGS's exact `No results found` exception as a
+successful empty set, not an outage. When a recency-filtered request is empty it
+makes one retry against the same DuckDuckGo backend without the filter and
+records that effective filter. An unfiltered empty result remains empty. Timeout,
+rate-limit, and every other provider error fail closed as search unavailable.
 
 ## Persistence and artifact boundaries
 
-SQLite is the local system of record for run state, attempts, criteria, search
-executions, search hits, captures, artifacts, and approvals. It uses foreign
-keys and WAL mode. Append-only records retain original inputs and hashes; mutable
-run status is a coordination projection, not an authority to rewrite history.
+SQLite is the local system of record for run state, acquisition and Ralph
+attempts, criteria, search executions, search hits, captures, artifacts, and
+approvals. It uses foreign keys and WAL mode. Queries and captures are committed
+during acquisition. In live mode the decision frame is checkpointed before
+research. Every successful query/hit execution is synchronously persisted before
+its tool result returns to the model, so partial discovery survives a later typed
+bundle failure. Each completed force bundle is then checkpointed; successful
+captures are appended as they complete. After evidence freezes, every completed
+Ralph step stores its attempt report and a `ralph_checkpoint` artifact before
+another retry.
+Append-only records retain original inputs and hashes; mutable run status is a
+coordination projection, not an authority to rewrite history.
 
 Canonical exported artifacts are:
 
@@ -209,6 +262,20 @@ Canonical exported artifacts are:
 Artifacts are written through temporary files and atomic replacement. An
 approval binds to the SHA-256 fingerprint of the canonical `BoardBrief`, not to
 a filename or run ID alone.
+
+The API serves only the memo and evidence register, directly from immutable,
+hash-verified SQLite artifact payloads. It does not serve the audit sidecar,
+which can contain local-only request and trace data; authorized operators review
+that file through the protected local artifact directory. The SQLite database,
+artifact directory, and `.env` are plaintext application files. Full-disk
+encryption, filesystem permissions, backup encryption, retention, and secure
+deletion are deployment responsibilities.
+
+On API startup, rows left in `created`, `acquiring_evidence`, or `verifying` by a
+previous process are marked `failed`, any open database attempts are closed as
+`interrupted`, and a failure artifact records the reason. Completed immutable
+results are hydrated after restart. Queued/in-progress computation is not
+automatically resumed.
 
 ## Local deployment
 
@@ -255,7 +322,11 @@ export, retention controls, and load/concurrency qualification.
 | Search snippets are not evidence               | Distinct types and source-promotion boundary                           |
 | Force driver weights reconcile                 | `ForceAssessment` validator                                            |
 | Financial ranges and units reconcile           | Deterministic economics contracts                                      |
+| Owned economics reach the decision              | Pre-synthesis calculation plus conditional Ralph economics criterion   |
 | Board claims match canonical claims            | Runtime and quality-gate equality checks                               |
+| Requested audiences receive bounded analogies  | Audience-to-analogy Ralph criterion                                    |
+| Contrary basis reaches board-visible dissent   | Canonical stance and challenge/dissent Ralph criterion                 |
+| User decision and market boundary remain fixed | Request-fidelity Ralph criterion                                       |
 | Ralph cannot self-certify                      | Independent evaluator and typed `GoalReport`                           |
 | Retry evidence is stable                       | Immutable snapshot ID across attempt manifests                         |
 | Publication follows human review               | Four content-bound role approvals with no current rejection            |

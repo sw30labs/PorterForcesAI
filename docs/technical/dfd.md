@@ -1,7 +1,7 @@
 # Data-flow diagrams
 
 Status: normative local design  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 These diagrams describe what crosses each trust boundary. They intentionally
 separate search discovery, page capture, evidence promotion, and publication.
@@ -48,40 +48,56 @@ flowchart TB
     U[Analyst]
     UI[1.0 Local UI or CLI]
     API[2.0 Local API]
-    FRAME[3.0 Decision framing]
-    INNER[4.0 Analysis StateGraph]
+    ACQ[3.0 Durable acquisition phase]
+    FRAME[3.1 Decision framing]
+    RESEARCH[3.2 Five-force discovery and capture]
+    CALC[4.0 Economics calculator]
     RALPH[5.0 Ralph supervisor]
-    EVAL[6.0 Deterministic evaluator]
-    CALC[7.0 Economics calculator]
-    RENDER[8.0 Artifact renderer]
-    REVIEW[9.0 Publication gate]
+    INNER[5.1 Fresh analysis StateGraph]
+    EVAL[5.2 Deterministic evaluator]
+    CHECK[5.3 Per-attempt checkpoint]
+    RENDER[6.0 Artifact renderer]
+    REVIEW[7.0 Publication gate]
     D1[(D1 Run repository)]
     D2[(D2 Evidence snapshot)]
     D3[(D3 Artifacts)]
 
     U -->|request and owned inputs| UI
     UI -->|validated JSON| API
-    API --> FRAME
-    FRAME -->|decision contract| RALPH
-    D2 -->|immutable snapshot ID| RALPH
+    API --> ACQ
+    ACQ --> FRAME
+    FRAME --> RESEARCH
+    RESEARCH -->|queries, hits, captures| D1
+    RESEARCH -->|promoted captured evidence| D2
+    ACQ --> CALC
+    CALC -->|owned NPV, ROI, payback, delay results| RALPH
+    D2 -->|frozen evidence and snapshot ID| RALPH
     RALPH -->|objective, fresh thread, gap directives| INNER
-    INNER -->|candidate brief and ledgers| EVAL
-    INNER -->|provenance-bearing ranges| CALC
-    CALC -->|NPV, ROI, payback, cost of delay| INNER
+    D2 -->|cached research and captured evidence| INNER
+    CALC -->|immutable calculator results| INNER
+    INNER -->|candidate brief, ledger, challenge| EVAL
     EVAL -->|criterion outcomes and remediation| RALPH
-    RALPH -->|status and attempt manifest| D1
+    RALPH --> CHECK
+    CHECK -->|attempt, goals, Ralph state| D1
+    CHECK -->|retry only after checkpoint| RALPH
     RALPH -->|accepted candidate| RENDER
     RENDER --> D3
-    D3 -->|exact brief fingerprint| REVIEW
+    RENDER -->|immutable public payloads and result| D1
+    D1 -->|immutable board artifact and exact fingerprint| REVIEW
     U -->|role decision for exact fingerprint| REVIEW
     REVIEW -->|immutable approval| D1
     REVIEW -->|publishable state or missing roles| API
     API --> UI
 ```
 
-The evaluator receives the candidate but does not invoke the generator to decide
-success. The status `achieved_draft` means deterministic draft criteria passed.
-`publishable` additionally requires all current content-bound human approvals.
+Acquisition and finance calculation finish before candidate synthesis. A Ralph
+retry reuses the cached research bundles, frozen captures, and exact calculator
+results; it does not silently search again. The evaluator receives the candidate
+but does not invoke the generator to decide success. Every completed attempt is
+persisted before another retry begins. Those checkpoints provide audit and
+restart diagnosis, not resumption of a partly completed model call. The status
+`achieved_draft` means deterministic draft criteria passed. `publishable`
+additionally requires all current content-bound human approvals.
 
 ## Level 2: public research and evidence promotion
 
@@ -93,11 +109,11 @@ flowchart LR
     SEARCH[DuckDuckGo adapter]
     DDG[DuckDuckGo]
     REG[(Executed-query and hit ledger)]
-    SELECT[Candidate reconciliation]
+    SELECT[Force-balanced candidate selection<br/>with publisher diversity]
     FETCH{Safe capture boundary}
     HOST[Registered public host]
     CAP[(Content-addressed capture)]
-    CLASSIFY[Source classification and excerpt selection]
+    CLASSIFY[Policy-owned source class, scores,<br/>and excerpt selection]
     EVID[(EvidenceItem ledger)]
     LINK[Claim-evidence linker]
     CLAIM[(Canonical claims)]
@@ -111,12 +127,12 @@ flowchart LR
     SEARCH -->|exact query and ordered hits| REG
     REG --> SELECT
     SELECT -->|ledger-minted source ID| FETCH
-    FETCH -->|validate DNS on every hop and bounded GET| HOST
+    FETCH -->|validate and pin public DNS on every hop; bounded GET| HOST
     HOST -->|untrusted HTML or text| FETCH
     FETCH -->|hashes, clean text, final URL| CAP
     CAP --> CLASSIFY
     CLASSIFY -->|captured excerpt and source metadata| EVID
-    EVID --> LINK
+    EVID -->|exact quote locator + lexical screen| LINK
     LINK --> CLAIM
 ```
 
@@ -126,15 +142,22 @@ Trust-state rules:
    board-visible material claim.
 2. Capture accepts a ledger-minted `source_id`, not an arbitrary model-supplied
    URL.
-3. DNS is checked before each request and redirect. Private, loopback,
-   link-local, reserved, multicast, and non-global addresses are rejected.
+3. DNS is checked before each request and redirect, and the approved address set
+   is pinned into the connection path. Private, loopback, link-local, reserved,
+   multicast, and non-global addresses are rejected.
 4. Redirect count, media types, time, response bytes, and extracted characters
-   are bounded. HTTPS downgrade is rejected by default.
+   are bounded. Only HTML, XHTML, and plain text are accepted; PDF is rejected.
+   HTTPS downgrade is rejected by default.
 5. Captured text remains untrusted external content. Promotion records the
    capture hash, class, publisher, excerpt, scores, applicability, and retrieval
    time.
 6. A claim must cite canonical evidence IDs and have matching explicit link
-   records. Capture proves what was read, not that the claim is true.
+   records. Each link's supporting quote must occur exactly in the excerpt, and
+   fact/inference links pass a lexical-alignment screen. Capture and alignment
+   prove neither semantic entailment nor truth.
+7. Candidate capture is application-owned, round-robin across the five force
+   sets, and biased toward publisher diversity. Source class and conservative
+   scores are policy-owned rather than accepted from the model.
 
 ## Level 2: model capability boundary
 
@@ -146,6 +169,7 @@ flowchart TB
     TOOL[search_public_web]
     LIMITS[Model and tool call limits]
     GUARD[Tool-call allowlist middleware]
+    DURABLE[(Force-scoped query and hit record)]
     RESULT[ResearchBundle schema]
     RECONCILE[Recorded-query and URL reconciliation]
 
@@ -155,7 +179,8 @@ flowchart TB
     MODEL -->|requested tool call| GUARD
     GUARD -->|allowed| TOOL
     GUARD -->|guessed or hidden tool| REJECT[Fail closed]
-    TOOL --> AGENT
+    TOOL -->|successful search callback| DURABLE
+    DURABLE -->|persist before tool result returns| AGENT
     AGENT --> RESULT
     RESULT --> RECONCILE
 ```
@@ -164,6 +189,13 @@ The research worker's model-visible capability set is the application-owned
 search tool and the structured `ResearchBundle` response. Host filesystem,
 shell, general-purpose subagents, unrestricted fetching, and final board
 recommendation authority are outside that boundary.
+
+The worker contract asks for one parallel batch. Middleware executes at most
+five searches per force and returns explicit limit errors for excess calls so
+the model can still synthesize its typed bundle. Each successful execution is
+assigned force-scoped sequence lineage and committed synchronously before its
+result reaches the model. Concurrent records are later sorted by that lineage;
+a bundle/schema failure cannot erase the searches that already completed.
 
 ## Level 2: human publication flow
 
@@ -190,15 +222,22 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     OP[Operation] --> F{Failure type}
-    F -->|ambiguous scope| HUMAN[Human clarification required]
+    F -->|ambiguous scope| HUMAN[Fail closed; clarify and start a new run]
     F -->|egress violation| DENY[Reject without network call]
-    F -->|search unavailable| RETRY[Bounded retry or explicit blocked result]
+    F -->|filtered DuckDuckGo no-results| RELAX[One same-provider unfiltered retry]
+    F -->|unfiltered no-results| EMPTY[Successful empty discovery set]
+    F -->|timeout, rate limit, or provider error| SEARCHFAIL[Fail closed as search unavailable]
     F -->|unsafe source| QUAR[Reject source and record gap]
     F -->|model schema failure| CONTRACT[Runtime contract error]
     F -->|quality defect| REPAIR[One local repair then Ralph evaluation]
     F -->|same Ralph gap repeats| STALL[Blocked by stall limit]
-    F -->|missing approval or owner input| PAUSE[Human required]
+    F -->|missing publication approval| PAUSE[Human required]
+    F -->|reviewer rejection| BLOCKED[Blocked; new revision required]
+    F -->|process interrupted| RECOVER[Startup marks run failed and closes open attempt]
+    F -->|missing finance input| DISCLOSE[Disclose missing input; never invent it]
 ```
 
 There is no permitted failure route from unavailable evidence to "use model
-memory as fact." Model priors remain labeled priors or evidence gaps.
+memory as fact." Model priors remain labeled priors or evidence gaps. There is
+also no general pause/resume API in the local release: startup recovery fails an
+interrupted run closed and directs the operator to create a new run.

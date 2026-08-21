@@ -18,9 +18,12 @@ cherry-pick changing public evidence, or repeatedly produce the same defect.
 
 ## Decision
 
-Place a separate Ralph StateGraph around the complete analysis graph. The
-outer graph owns a typed goal ledger and accepts completion only from an
-independent deterministic evaluator.
+Place a separate Ralph supervisor around the complete analysis graph. The
+supervisor owns a typed goal ledger and accepts completion only from an
+independent deterministic evaluator. `RalphSupervisor.build_meta_graph()` can
+compile the transition contract as a LangGraph `StateGraph`; the application
+service intentionally calls `step()` in an explicit bounded loop so it can
+persist every completed attempt before starting a retry.
 
 ```mermaid
 flowchart LR
@@ -30,7 +33,7 @@ flowchart LR
     A -->|candidate artifact| V[Deterministic evaluator]
     V -->|GoalReport| R
     R -->|accepted| D[Draft or publishable artifact]
-    R -->|pause| H[Human decision]
+    R -->|publication approval missing| H[Human decision]
     R -->|limits/stall| B[Blocked report]
 ```
 
@@ -42,10 +45,20 @@ The following invariants are mandatory:
 4. Analysis output fields such as `done`, `valid`, or `confidence` have no
    authority over Ralph status.
 5. Failed criteria produce typed retry directives.
-6. A human-required result pauses immediately.
+6. A missing publication approval returns `human_required` immediately; a
+   reviewer rejection returns `blocked` and requires a new content revision.
 7. Attempt, budget, non-retryable-gap, and stall limits fail closed.
 8. `publishable` requires a publishability target whose required criteria
    include approval verification; draft achievement is a distinct status.
+9. The service writes the attempt/report, goal projection, and serialized Ralph
+   checkpoint before another retry begins.
+
+The draft definition of done checks the decision contract, all five force
+assessments, captured-evidence integrity, the board decision, one bounded analogy
+per requested audience, fidelity to the exact question and market boundary, and
+canonical counterevidence shared by challenge and board-visible dissent. When
+finance-owned scenario or delay calculations are supplied, a conditional
+economics-coherence criterion also checks their exact propagation and treatment.
 
 ## State transitions
 
@@ -103,14 +116,20 @@ Costs and limitations:
 - Product teams must define meaningful criteria and deterministic evaluators.
 - A passing definition of done is assurance about the contract, not proof that
   an uncertain strategic forecast is true.
-- Snapshot refresh and post-human-decision resume are explicit application
-  workflows, not silent transitions inside this loop.
+- Snapshot refresh and post-human-decision revision are explicit new-run or
+  approval workflows, not silent transitions inside this loop. The local API has
+  no general pause/resume endpoint.
 - The meta-graph adds persistence and observability records that must be
   retained according to the organization's data policy.
+- A persisted Ralph checkpoint is an audit/recovery boundary, not a promise to
+  resume a partly completed model or network operation. Startup fails
+  interrupted nonterminal runs closed.
 
 ## Verification
 
 Offline tests cover first-attempt success, gap-directed retry then success,
 publishable targeting, human pause, maximum-attempt blocking, budget blocking,
-stall blocking, evidence snapshot tampering, incomplete evaluator reports, and
-the compiled LangGraph meta-loop.
+stall blocking, evidence snapshot tampering, incomplete evaluator reports,
+strict audience/fidelity/counterevidence/economics criteria, per-attempt durable
+checkpoints, startup interrupted-run recovery, and the compiled LangGraph
+meta-loop.

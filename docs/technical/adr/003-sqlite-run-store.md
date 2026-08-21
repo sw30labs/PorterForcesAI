@@ -121,30 +121,54 @@ from being attached to an attempt belonging to another run. A capture can be
 inserted only if its source ID already exists in `hits`; application validation
 also reconciles execution ID, query ID, and discovered URL.
 
-## Transaction boundaries
+## Phase and transaction boundaries
 
 ```mermaid
-flowchart LR
-    R[Create or resume run] --> A[Start attempt]
-    A --> G[Update goal ledger]
-    A --> Q{{Transaction: query + all ordered hits}}
-    Q --> C{{Transaction: validated capture}}
-    C --> F{{Transaction: immutable artifact}}
-    F --> X[Finish attempt with GoalReport]
-    F --> P{{Transaction: content-bound approval}}
-    X --> S[Update run status]
-    P --> S
+flowchart TD
+    R[Create run] --> A[Start acquisition attempt 1]
+    A --> D{{Append live decision-frame checkpoint}}
+    D --> B{{Append each force research-bundle checkpoint}}
+    B --> Q{{Transaction per query + all ordered hits}}
+    Q --> C{{Transaction per validated capture}}
+    C --> Z[Finish acquisition as evidence_frozen]
+    Z --> E[Calculate finance-owned economics]
+    E --> W[Execute one Ralph attempt in memory]
+    W --> X1{{Insert completed Ralph attempt identity}}
+    X1 --> X2{{Finish attempt with GoalReport}}
+    X2 --> G{{Upsert each goal projection}}
+    G --> K{{Append Ralph checkpoint artifact}}
+    K -->|retryable| W
+    K -->|terminal| F{{Transaction: final artifacts + terminal status}}
+    F --> P{{Transaction: approval + goal + quality + result revision + status}}
 
-    Q -. rollback all .-> E[Conflict or FK error]
-    C -. rollback .-> E
-    F -. rollback .-> E
-    P -. rollback .-> E
+    Q -. rollback all .-> ERR[Conflict or FK error]
+    C -. rollback .-> ERR
+    F -. rollback .-> ERR
+    P -. rollback .-> ERR
 ```
 
 A query and its complete ordered hit set are committed atomically. A duplicate
 source ID, rank, or canonical URL rolls back the query as well as every hit.
 Nested repository operations use savepoints, allowing a bounded unit of work to
-roll back without corrupting its outer transaction.
+roll back without corrupting its outer transaction. Acquisition is attempt 1;
+database attempt numbers 2 onward correspond to completed Ralph manifests.
+
+In live mode, the decision frame is checkpointed before research. Each
+successful query/hit execution is assigned force-scoped sequence lineage and
+committed synchronously before its tool result returns; the completed force
+bundle is appended afterward. This preserves partial discovery if bundle
+generation later fails. Captures are appended one at a time.
+
+The Ralph attempt row, goal projections, and checkpoint are separate bounded
+transactions. The service does not begin a retry until all of them return
+successfully. A process interruption between these commits can leave a partial
+audit tail; startup retains that evidence, closes open attempts, and fails the
+nonterminal run rather than resuming or declaring it complete.
+
+By contrast, the final immutable database outputs and terminal status are one
+outer repository transaction, and each approval plus its derived goal, quality
+report, result revision, and new status is one outer transaction. Local rendered
+file writes are filesystem operations and are not part of SQLite rollback.
 
 ## Migrations and indexes
 
@@ -191,6 +215,8 @@ Positive consequences:
 - WAL permits the local UI to read progress while a worker commits bounded
   transactions.
 - Canonical JSON makes approval and artifact hashes reproducible.
+- Public memo and evidence-register downloads are served from the newest
+  hash-verified immutable SQLite payload, not from mutable rendered files.
 
 Costs and limitations:
 
@@ -204,6 +230,9 @@ Costs and limitations:
   children exist. Retention deletion needs an explicit, separately authorized
   archival workflow.
 - Schema migrations are forward-only; backups must precede production upgrades.
+- Ralph checkpoints preserve completed-attempt state for audit and recovery
+  diagnosis, but the local service does not resume interrupted model/network
+  execution. Startup marks nonterminal runs failed and requires a new run.
 
 ## Verification
 
@@ -213,4 +242,3 @@ insertion, source-registration enforcement, capture round trips, immutable
 triggers, nested transaction rollback, canonical artifact hashes, approval
 fingerprint matching, reopen persistence, local-path enforcement, optimization,
 and closed-repository behavior.
-

@@ -1,7 +1,7 @@
 # Testing and verification strategy
 
 Status: executable local test strategy  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 Testing is arranged so that most defects are reproducible without a model or
 network. Live oMLX, DuckDuckGo, source-host, and browser checks are separate
@@ -29,14 +29,14 @@ profile or release is declared qualified.
 | Pydantic contracts        | Invalid identities, URLs, options, weights, provenance, ranges, and approvals fail closed                               | None                          |
 | Deterministic economics   | Range ordering, units, NPV, ROI, payback, delay formula, and edge cases                                                 | None                          |
 | Egress and search adapter | Restricted terms, canonical URLs, provider selection, deduplication, and failure behavior                               | Mocked provider               |
-| Deep Agent contract       | Tool allowlist, no host capabilities, call limits, and structured `ResearchBundle` boundary                             | Mocked oMLX HTTP contract     |
-| Source capture            | Discovery registration, SSRF checks, redirects, media/size limits, extraction, hashing, and promotion                   | Mocked resolver/client        |
-| Quality gate              | Canonical claims, links, entailment, evidence utility, assumptions, warnings, and content-bound approvals               | None                          |
+| Deep Agent contract       | Tool allowlist, no host capabilities, one-batch/five-search bound, and typed `ResearchBundle` boundary                 | Mocked oMLX HTTP contract     |
+| Source capture            | Discovery registration, DNS/IP pinning, redirects, media/size limits, extraction, hashing, and promotion                | Mocked resolver/client        |
+| Quality gate              | Canonical claims, exact quote locators, lexical alignment, evidence utility, assumptions, and content-bound approvals    | None                          |
 | Inner LangGraph           | Five-force fan-out/fan-in, ordering, scope failure, one bounded repair, and checkpoint reset                            | Fake runtime                  |
-| Ralph                     | Fresh threads, snapshot invariance, pass/retry/pause/block routes, budget, attempts, and stall                          | Fake analysis/evaluator       |
+| Ralph                     | Strict criteria, fresh threads, snapshot invariance, pass/retry/pause/block routes, budget, attempts, and stall         | Fake analysis/evaluator       |
 | Repository                | Migrations, WAL/FK health, transactions, append-only triggers, lineage, hash checks, and conflicts                      | Temporary SQLite              |
 | Runtime                   | Complete deterministic demo and structured oMLX contract boundaries                                                     | Demo or fake model/search     |
-| API                       | Endpoint schemas, async lifecycle, redaction, approval transitions, and local security headers                          | In-process ASGI client        |
+| API                       | Endpoint schemas, async lifecycle, recursive redaction, recovery, immutable downloads, approvals, and local controls    | In-process ASGI client        |
 | UI                        | Production build, server rendering, navigation/content smoke checks, responsive and accessible visual review            | Local UI server/browser       |
 | Live profile              | Exact model inventory, tool calling, JSON schema, DuckDuckGo, registered source capture, and one bounded end-to-end run | Local oMLX and public network |
 
@@ -101,7 +101,11 @@ Required automated cases are:
 7. stall-fingerprint block;
 8. evidence snapshot tampering rejection;
 9. missing, duplicate, and unexpected criterion evaluation rejection;
-10. compiled LangGraph meta-loop behavior.
+10. audience coverage, exact request/market fidelity, canonical counterevidence,
+    and conditional economics behavior;
+11. service persistence of each completed attempt before retry and fail-closed
+    startup recovery; and
+12. compiled LangGraph meta-loop behavior.
 
 ## Evidence-security matrix
 
@@ -111,14 +115,34 @@ Required automated cases are:
 | Model invents candidate URL                  | Removed during reconciliation         |
 | Unregistered URL passed to capture           | `SourceNotRegisteredError`            |
 | Host resolves to loopback/private/link-local | `UnsafeSourceURLError` before fetch   |
+| DNS answer changes before socket connection  | Connection-time answer is revalidated and public IP is pinned |
 | Safe first URL redirects to private host     | Redirect rejected before next request |
 | HTTPS redirects to HTTP                      | Rejected by default                   |
+| PDF or another non-text media type           | Rejected; explicit evidence gap       |
 | Missing/disallowed content type              | Capture rejected                      |
 | Declared or streamed body exceeds limit      | Capture rejected                      |
 | HTML contains script/style content           | Excluded from extracted text          |
 | Claim IDs and link IDs differ                | Quality error                         |
-| Material fact has no usable entailed support | Quality error                         |
+| Link quote absent from captured excerpt      | `EVIDENCE_QUOTE_NOT_FOUND`            |
+| Exact quote is lexically unrelated to claim  | `SUPPORT_QUOTE_LOW_ALIGNMENT`         |
+| Material fact has no usable supporting link  | Quality error                         |
 | Evidence changes inside Ralph retry          | Goal criterion fails                  |
+
+The quote/alignment cases are deliberately scoped. Passing them does not prove
+semantic entailment or source truth; a human reviewer must evaluate meaning,
+authority, context, and applicability.
+
+DuckDuckGo adapter tests separately distinguish discovery absence from outage:
+the exact DDGS no-results sentinel and an empty list are successful empty sets;
+a filtered empty result gets one same-provider unfiltered retry and records the
+relaxed filter; an unfiltered empty result returns immediately; timeout,
+rate-limit, and other provider errors raise `SearchUnavailableError`.
+
+Research-agent/runtime tests prove the five-search cap can return limit errors
+without preventing typed bundle synthesis, and that force-scoped lineage is
+stamped before the synchronous persistence callback. Service inspection and
+integration coverage must also preserve deterministic lineage ordering and the
+invariant that already committed discovery survives a later bundle failure.
 
 ## Model qualification
 
@@ -156,10 +180,13 @@ For every endpoint, test success and failure shapes. Especially verify:
 - malformed and extra fields fail validation;
 - approval hash/artifact/run mismatch returns `409`;
 - partial approvals retain `human_required`;
-- a rejection prevents publication;
+- a rejection changes the current revision to `blocked` and prevents publication;
 - all four current approvals allow `publishable` only when `draft_valid` is true;
 - secrets and internal context are absent from health, dashboard, settings,
-  errors, and routine run summaries;
+  errors, routine summaries, and every nested run-detail/Ralph projection;
+- startup fails abandoned nonterminal runs and closes open attempts;
+- only board-memo and evidence-register downloads are available, and their
+  content comes from hash-verified immutable SQLite payloads;
 - non-local Host/Origin values fail in the standard local profile.
 
 ## UI visual acceptance

@@ -30,6 +30,22 @@ hits. It alone mints source IDs. The capture service accepts a source ID and
 resolves its URL from that ledger; it has no API that accepts a caller-supplied
 URL.
 
+DDGS's exact no-results sentinel is treated as successful empty discovery. A
+recency-filtered empty request gets one unfiltered retry on the same DuckDuckGo
+backend and records the relaxed filter. Timeouts, rate limits, and other provider
+errors fail closed.
+
+Each force worker requests one parallel batch. At most five searches execute;
+excess calls receive explicit limit errors so typed bundle generation can still
+finish. Successful executions receive force-scoped sequence IDs and are
+synchronously stored before their tool results return. Concurrent executions are
+sorted by lineage, and partial discovery survives a later bundle failure.
+
+The application, not the research model, selects capture candidates round-robin
+across all five force-specific hit sets and prefers unused publisher hosts. It
+also owns the conservative live source classification and
+quality/freshness/applicability scores.
+
 ```mermaid
 stateDiagram-v2
     [*] --> PlannedQuery
@@ -39,7 +55,7 @@ stateDiagram-v2
     SearchHit --> CapturedSource: ledger source ID + bounded safe fetch
     CapturedSource --> Rejected: unsupported or irrelevant
     CapturedSource --> EvidenceItem: classify and select excerpt
-    EvidenceItem --> ClaimLink: verifier records stance and entailment
+    EvidenceItem --> ClaimLink: exact quote locator + lexical screen
     ClaimLink --> [*]
 ```
 
@@ -52,6 +68,10 @@ access. The capture policy:
 - resolves all advertised addresses and rejects the target if any address is
   private, loopback, link-local, reserved, multicast, unspecified, malformed,
   or otherwise non-global;
+- uses an application-owned HTTP transport that revalidates the address set at
+  connection time and opens the socket to a validated IP literal while
+  preserving the original hostname for HTTP `Host`, TLS SNI, and certificate
+  verification;
 - performs redirects manually, repeats URL and DNS validation on every hop,
   detects loops, limits redirect count, and rejects HTTPS downgrade by default;
 - disables environment proxy inheritance for its owned HTTP client;
@@ -66,6 +86,11 @@ The clean text is still labeled `untrusted_external_content`. Cleaning is data
 reduction, not a claim that the page is safe or true. Models receive it as
 quoted source material under a separate instruction boundary, never as system
 instructions and never as executable content.
+
+Promotion and linking add two locator controls: `supporting_quote` must be an
+exact substring of the captured excerpt, and material fact/inference links must
+pass a lexical-alignment threshold. Neither control is an independent semantic
+entailment judgment or truth proof.
 
 ```mermaid
 sequenceDiagram
@@ -83,12 +108,13 @@ sequenceDiagram
     alt any address is non-global
         C-->>A: Reject and retain evidence gap
     else all addresses allowed
-        C->>H: GET, redirects disabled
+        C->>D: Revalidate addresses at connection time
+        C->>H: Connect to pinned public IP and GET with redirects disabled
         H-->>C: Response or redirect
         loop each redirect
             C->>D: Revalidate new canonical host
         end
-        C->>C: Enforce type/size; extract; hash; label untrusted
+        C->>C: Enforce type and size then extract hash and label untrusted
         C-->>E: CapturedSource
         E-->>A: EvidenceItem with capture hash
     end
@@ -102,10 +128,11 @@ sealed before candidate generation. A retry does not silently search again.
 Refreshing public evidence creates a new snapshot and therefore a new run or an
 explicitly approved refresh transition.
 
-The current persistence layer stores immutable query, hit, and capture records.
-Snapshot-manifest construction binds the selected capture IDs and hashes; it is
-the orchestration layer's responsibility to seal that manifest before the Ralph
-loop starts.
+The current service stores every query execution and ordered hit set as it is
+acquired, then stores each successful capture. It seals a deterministic hash of
+the promoted `EvidenceItem` set before calculating economics and entering the
+Ralph loop. Every Ralph checkpoint carries the same snapshot ID, and the
+evaluator recomputes it from the candidate ledger before accepting an attempt.
 
 ## Alternatives considered
 
@@ -135,6 +162,8 @@ Positive consequences:
 
 - Every public evidence item reconciles to a registered search hit and exact
   captured representation.
+- Capture capacity is distributed across all five forces and source scoring is
+  application-owned rather than model-declared.
 - Search-provider metadata cannot silently become proof.
 - Network behavior is deterministic enough to test without live internet.
 - Content and redirect limits cap memory, latency, and model-context exposure.
@@ -143,13 +172,13 @@ Costs and limitations:
 
 - Only HTML, XHTML, and plain text are captured. PDF and other formats need a
   separately sandboxed extractor and ADR.
-- DNS validation in the application is defense in depth, not a replacement for
-  an operating-system or network egress rule. Production deployments must deny
-  private and metadata-service destinations at the network layer as well,
-  eliminating DNS-rebinding and resolver/connection race exposure.
+- DNS validation and connection-time IP pinning in the application are defense
+  in depth, not replacements for an operating-system or network egress rule.
+  Production deployments should also deny private and metadata-service
+  destinations at the network layer.
 - A content hash proves which bytes were processed, not authenticity or truth.
-- Source-class assignment, excerpt selection, and claim entailment remain
-  separate reviewable decisions.
+- Source-class assignment, excerpt selection, semantic entailment, applicability,
+  and source truth remain separate reviewable decisions.
 
 ## Verification
 

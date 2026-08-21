@@ -3,7 +3,7 @@
 Status: implemented local FastAPI contract  
 Base path: `/api`  
 Default origin: `http://127.0.0.1:8765`  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 The API supports the analyst console and same-workstation automation. It is not
 an internet-facing, multi-user API. FastAPI binds to loopback, trusts only local
@@ -17,9 +17,12 @@ hosts, and allows CORS only from the configured loopback UI origin.
 - IDs are opaque strings. Clients must not infer order or type from an ID.
 - `POST /api/analyses` is asynchronous and returns `202`; clients poll the run.
 - API request models and nested Pydantic domain models reject unknown fields.
-- Completed results survive process restart through the immutable
-  `analysis_result` artifact; internal context and restricted terms remain
-  redacted when a result is returned.
+- Completed results survive process restart through a hash-verified immutable
+  `analysis_result` artifact. Run-detail redaction walks the complete nested
+  response, including Ralph objective/output snapshots.
+- Startup marks runs left in `created`, `acquiring_evidence`, or `verifying` as
+  failed and closes their open attempts. Checkpoints are durable audit records;
+  this release does not resume an interrupted model or network call.
 - FastAPI validation errors use its standard `detail` structure. Application
   state conflicts use a short, sanitized `detail` string.
 
@@ -72,7 +75,8 @@ public source hosts. Run `porter-forces doctor --live-canary` for model readines
 ```
 
 The model endpoint is safe operational configuration; the API key is never
-returned.
+returned. `local_only` describes the API binding/profile; a deliberately enabled
+remote model endpoint does not change that field.
 
 ### `GET /api/dashboard`
 
@@ -110,10 +114,6 @@ Returns the safe settings subset consumed by the console.
   "model": "Qwen3.8-27B-4bit",
   "searchRegion": "us-en",
   "maxSources": 15,
-  "temperature": "0",
-  "requireCapture": true,
-  "requireFourApprovals": true,
-  "redactPrompts": true,
   "apiHost": "127.0.0.1",
   "apiPort": 8765
 }
@@ -121,9 +121,11 @@ Returns the safe settings subset consumed by the console.
 
 ### `PUT /api/settings`
 
-Updates the permitted in-memory operational subset for subsequent runs. It does
-not write `.env` and cannot set API keys, remote-endpoint permission, API bind,
-database path, artifact path, Ralph policy, or security gates.
+Updates the permitted session-scoped, in-memory operational subset. It does not
+write `.env` and cannot set API keys, remote-endpoint permission, API bind,
+database path, artifact path, Ralph policy, or security gates. Settings are not
+versioned or locked per run, so change them only while no analysis is active;
+later service reads use the new values.
 
 ```json
 {
@@ -140,9 +142,11 @@ remote HTTP is never accepted.
 
 ### `POST /api/analyses`
 
-Creates a background job. Demo mode uses labeled synthetic fixtures without a
-model or public network. Live mode requires the configured oMLX model,
-DuckDuckGo, and at least one safely captured, promotable public source.
+Creates an in-process background job. Demo mode uses labeled synthetic fixtures
+without a model or public network. Live mode requires the configured oMLX model,
+DuckDuckGo, and safely captured promotable evidence for every Porter force. The
+single-worker queue is process-local; a request that has not yet created its run
+row is not a durable job.
 
 Canonical request:
 
@@ -165,7 +169,7 @@ Canonical request:
     "internal_context": {
       "control_posture": "Local-only context; never copy into a public query"
     },
-    "evidence_cutoff": "2026-08-20"
+    "evidence_cutoff": "2026-08-21"
   },
   "scenario_economics": [],
   "cost_of_delay": null,
@@ -180,6 +184,25 @@ For live mode, callers must supply the explicit sanitized
 for public-query planning. Confidential facts belong in `internal_context`, and
 distinctive sensitive strings belong in `restricted_terms`.
 
+The live-web MVP captures current pages, not historical archives. It rejects an
+`evidence_cutoff` earlier than the current UTC date because it cannot prove
+that a present page represents the earlier information set. A current/future
+cutoff is carried into query planning; historical analysis needs a separately
+supplied dated archive, which this endpoint does not yet accept.
+
+The application allocates the capture budget round-robin across all five force
+candidate sets, preferring publisher diversity. It assigns source class and
+conservative quality/freshness/applicability scores from policy. Claim links need
+an exact quote from the capture and a lexical-alignment screen for material facts
+and inferences. These are provenance/relevance controls, not semantic-entailment
+or truth proof.
+
+Each force worker requests one parallel search batch; at most five calls execute,
+and excess calls return limit errors without preventing typed bundle synthesis.
+Successful query/hit executions are assigned force-scoped sequence IDs and
+persisted before tool results return. Thus partial discovery remains in the
+acquisition attempt if a later bundle/schema step fails.
+
 `scenario_economics` accepts zero or more typed low/base/high finance scenarios;
 `cost_of_delay` accepts the typed deterministic delay inputs. Every range must
 name at least one evidence or assumption basis ID and may name an accountable
@@ -190,27 +213,32 @@ The optional Ralph overrides are bounded by the transport contract:
 `max_attempts` 1–10, `max_budget_units` 1–100, and `stall_limit` 2–10. Omitting
 them uses the locally configured policy.
 
-The console also has a compact demo form with `question`, `organization_type`,
-`horizon`, `market_boundary`, `internal_context`, and `board_objection`. The
-compact form defaults to demo. Enabling web research requires a separate
-explicit sanitized `public_research_context`; the API never constructs live
-public context from a possibly confidential question.
+The console also has a compact form with `target`, `question`,
+`organization_type`, `horizon`, `market_boundary`, `internal_context`,
+`board_objection`, `evidence_cutoff`, optional `scenario_economics`, and
+`research_policy: {"web": false}`. It defaults to demo. Enabling web research
+requires a separate explicit sanitized `public_research_context`; the API never
+constructs live public context from a possibly confidential question. Unknown
+research-policy switches are rejected.
 
 Accepted response:
 
 ```json
 {
-  "run_id": "RUN-20260820T230000Z-2b8f97c1",
-  "analysis_id": "RUN-20260820T230000Z-2b8f97c1",
-  "id": "RUN-20260820T230000Z-2b8f97c1",
+  "run_id": "RUN-20260821T230000Z-2b8f97c1",
+  "analysis_id": "RUN-20260821T230000Z-2b8f97c1",
+  "id": "RUN-20260821T230000Z-2b8f97c1",
   "status": "running",
   "progress": 1,
   "current_phase": "Queued"
 }
 ```
 
-The compact dashboard form supplies no economics or custom Ralph bounds today;
-the canonical form and CLI support them.
+The compact dashboard can supply one finance scenario when its economics form is
+enabled. It does not currently supply cost-of-delay inputs or custom Ralph
+bounds; the canonical form and CLI support them. Finance-owned calculations run
+before candidate synthesis and are included in the immutable inputs evaluated
+by the conditional Ralph economics criterion.
 
 ### `GET /api/runs`
 
@@ -263,19 +291,23 @@ artifact metadata.
   "iteration": 1,
   "max_iterations": 3,
   "quality_score": 1.0,
-  "started_at": "2026-08-20T23:00:00+00:00",
-  "completed_at": "2026-08-20T23:01:40+00:00",
+  "started_at": "2026-08-21T23:00:00+00:00",
+  "completed_at": "2026-08-21T23:01:40+00:00",
   "model": "deterministic-demo",
   "error": null,
   "details": {}
 }
 ```
 
-`details.request.internal_context` values are replaced with a redaction marker,
-and `details.request.restricted_terms` is empty. The response uses an `ETag`;
-send `If-None-Match` to receive `304` when unchanged.
+`details.request.internal_context` is replaced with a redaction marker and
+`details.request.restricted_terms` is empty. Restricted terms and internal
+context keys/values are also replaced wherever they recur in nested strings.
+`details.artifact_paths` contains only logical API URLs, never local filesystem
+paths. The response uses an `ETag`; send `If-None-Match` to receive `304` when
+unchanged.
 
-UI `status` values are `running`, `complete`, `awaiting_approval`, or `paused`.
+UI `status` values are `running`, `complete`, `awaiting_approval`, `blocked`, or
+`failed`. Terminal failures are not collapsed into a generic paused state.
 `application_status` preserves the precise service state: `created`,
 `acquiring_evidence`, `verifying`, `achieved_draft`, `human_required`,
 `publishable`, `blocked`, or `failed`.
@@ -290,7 +322,6 @@ returns local filesystem paths.
   "run_id": "RUN-...",
   "files": {
     "board_memo": "/api/runs/RUN-.../artifacts/board_memo",
-    "audit_sidecar": "/api/runs/RUN-.../artifacts/audit_sidecar",
     "evidence_register": "/api/runs/RUN-.../artifacts/evidence_register"
   },
   "artifacts": [
@@ -299,7 +330,7 @@ returns local filesystem paths.
       "type": "board_brief",
       "sha256": "a98c...",
       "schema_version": 1,
-      "created_at": "2026-08-20T23:01:40+00:00"
+      "created_at": "2026-08-21T23:01:40+00:00"
     }
   ]
 }
@@ -307,11 +338,16 @@ returns local filesystem paths.
 
 ### `GET /api/runs/{run_id}/artifacts/{artifact_name}`
 
-Downloads one allowlisted rendered artifact. Valid logical names are
-`board_memo`, `audit_sidecar`, and `evidence_register`. The server resolves the
-known path under the configured artifact root. Arbitrary filenames, traversal,
-and client-supplied paths are not accepted. Download metadata is reconstructed
-from persisted run artifacts after a clean restart.
+Downloads one allowlisted public artifact. Valid logical names are `board_memo`
+and `evidence_register`. The response is read from the newest hash-verified,
+immutable SQLite payload of the corresponding type; it is not read from a
+mutable filesystem path. Arbitrary filenames, traversal, and client-supplied
+paths are not accepted.
+
+The JSON audit sidecar remains a restricted local file under the configured run
+artifact directory. It contains the unredacted request/internal context plus rich
+research, evaluator, and Ralph state, so it is deliberately absent from `files`
+and cannot be downloaded through this API.
 
 ### `POST /api/runs/{run_id}/approvals`
 
@@ -335,8 +371,10 @@ Required roles are `strategy`, `finance`, `technology`, and `risk`.
 
 The response is the updated run detail. Fewer than four approvals leaves
 `human_required`; all four exact-current approvals with no current rejection and
-a valid draft produce `publishable`. Changing the brief invalidates prior
-publication authority while retaining stale records for audit.
+a valid draft produce `publishable`. A rejection of the exact current brief
+changes the run to `blocked`; a new reviewed content revision/run is required.
+Changing the brief invalidates prior publication authority while retaining stale
+records for audit.
 
 `POST /api/analyses/{run_id}/approvals` is a hidden compatibility alias.
 
@@ -355,7 +393,10 @@ stateDiagram-v2
     acquiring_evidence --> failed
     verifying --> failed
     human_required --> publishable: four exact approvals
-    human_required --> human_required: partial decision or rejection
+    human_required --> human_required: partial approvals
+    human_required --> blocked: current rejection
+    achieved_draft --> publishable: four exact approvals
+    achieved_draft --> blocked: current rejection
 ```
 
 Evidence refresh or material input change creates a new run rather than mutating
@@ -390,6 +431,11 @@ FastAPI validation example:
 Long-running live failures appear on the polled job/run as `failed` with a
 sanitized error summary; the `202` creation request cannot know their outcome.
 
+At API startup, any persisted nonterminal run is failed closed with an
+`InterruptedRunError`, open attempts are marked `interrupted`, and a failure
+artifact is appended. Start a new run from the persisted request; there is no
+general pause/resume endpoint in this local release.
+
 ## Local security behavior
 
 - `TrustedHostMiddleware` accepts only `127.0.0.1`, `localhost`, `[::1]`, and
@@ -397,17 +443,23 @@ sanitized error summary; the `202` creation request cannot know their outcome.
 - CORS allows only the configured loopback `PFA_UI_ORIGIN`, without credentials.
 - API transport and nested domain request models reject unknown fields.
 - Safe settings omit the API key and remote-endpoint toggle.
-- Run details redact internal-context values and remove restricted terms.
+- Run details recursively redact internal-context keys/values and restricted
+  terms, including copies inside nested Ralph state.
 - Persisted results are hydrated through hash-verified immutable artifacts; API
   redaction is reapplied after restart.
-- Artifact APIs expose logical names and verified metadata, not local filesystem
-  paths.
+- Public artifact downloads are reconstructed from hash-verified immutable
+  SQLite payloads. Only the memo and evidence register are downloadable; the
+  audit sidecar remains local.
 - External excerpts are rendered as text, never unsanitized HTML.
 - The application launcher rejects a non-loopback API bind.
 
 Loopback is not authentication. Do not expose the port through a public tunnel
 or reverse proxy. An authenticated, authorized multi-user API needs a separate
 ADR and threat model.
+
+SQLite, `.env`, and run-artifact files are ordinary local plaintext files. Use
+workstation disk encryption, restrictive permissions, backups appropriate for a
+WAL database, and an approved retention process for confidential work.
 
 ## Example local calls
 

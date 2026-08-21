@@ -1,7 +1,7 @@
 # SQLite entity-relationship design
 
 Status: implemented schema v2  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 `SQLiteRunRepository` is the local system of record for run coordination and
 audit provenance. The schema is deliberately compact: strongly typed domain
@@ -133,7 +133,7 @@ relationship. It records `version`, `name`, and `applied_at`; SQLite
 
 | Relationship            | Cardinality and rule                                                                                                                      |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Run to attempt          | A run has zero or more attempts; `(run_id, attempt_number)` and `(run_id, attempt_id)` are unique.                                        |
+| Run to attempt          | Attempt 1 is the durable acquisition phase; completed Ralph attempts follow from number 2. `(run_id, attempt_number)` and `(run_id, attempt_id)` are unique. |
 | Run to goal             | A run has one row per criterion key; goal status is an updatable projection of evaluation history.                                        |
 | Attempt to query        | Every executed query belongs to an existing attempt in the same run through a composite foreign key.                                      |
 | Query to hit            | Hits are ordered by rank; rank and canonical URL are unique within one execution.                                                         |
@@ -165,8 +165,9 @@ flowchart LR
 Schema v2 installs `BEFORE UPDATE` and `BEFORE DELETE` triggers for queries,
 hits, captures, artifacts, and approvals. The repository inserts these records
 inside bounded transactions. Attempts and goals are intentionally mutable
-coordination rows; the immutable attempt manifest and rendered audit sidecar
-retain the complete Ralph history.
+coordination rows. Each completed Ralph attempt is also serialized as a
+hash-verified `ralph_checkpoint` artifact before a retry can start; the final
+analysis result and local audit sidecar retain the complete Ralph history.
 
 ## Content and lineage integrity
 
@@ -222,6 +223,12 @@ validity alone is not domain validation.
 untrusted public content and must never be executed, interpreted as HTML in the
 UI, or included in outbound queries without a new egress review.
 
+The evidence snapshot is represented by a deterministic hash of the ordered
+promoted `EvidenceItem` set inside Ralph state and result artifacts; schema v2
+does not have a separate snapshot table. Finance calculations are likewise
+stored in the Ralph/result artifact payloads rather than normalized economics
+tables.
+
 ## Backup and recovery implications
 
 WAL databases must be backed up with the SQLite backup API or the `sqlite3`
@@ -229,3 +236,12 @@ WAL databases must be backed up with the SQLite backup API or the `sqlite3`
 main database file while a WAL is active can omit committed pages. Artifacts
 written outside SQLite must be backed up with the database and correlated by
 run and content hash.
+
+On API startup, runs still in `created`, `acquiring_evidence`, or `verifying`
+are changed to `failed`, open attempts are closed as `interrupted`, and a failure
+artifact is appended. The persisted Ralph checkpoint supports diagnosis and
+audit; it is not a resumable execution checkpoint in this release.
+
+SQLite, its WAL sidecars, and rendered run artifacts are ordinary local
+plaintext files. Content hashes detect accidental or unauthorized payload
+changes within the application boundary; they do not encrypt the content.

@@ -2,6 +2,7 @@
 
 Status: implemented and verified local MVP; enterprise hardening remains future work
 Design date: 2026-08-20  
+Last reviewed: 2026-08-21
 Initial vertical: AI and cloud decisions in global banking
 
 ## 1. Executive concept
@@ -163,9 +164,9 @@ corroboration.
 
 ```mermaid
 flowchart TD
-    I[Question + confidential organization context] --> D[Decision contract]
-    D -->|ambiguous| U[Human clarification]
-    U --> D
+    I[Question + confidential context + owned economics] --> ACQ[Durable acquisition phase]
+    ACQ --> D[Decision contract]
+    D -->|ambiguous| U[Fail closed for clarification]
     D --> H[Five causal hypothesis sets]
     H --> Q[Public-query planner]
     Q --> G[Egress policy gate]
@@ -174,35 +175,40 @@ flowchart TD
     G --> R3[Buyer research worker]
     G --> R4[Substitute research worker]
     G --> R5[Rivalry research worker]
-    R1 & R2 & R3 & R4 & R5 --> L[Source capture + evidence ledger]
-    L --> V[Evidence promotion gate]
-    V --> F1[Entrants assessment]
-    V --> F2[Supplier assessment]
-    V --> F3[Buyer assessment]
-    V --> F4[Substitute assessment]
-    V --> F5[Rivalry assessment]
-    F1 & F2 & F3 & F4 & F5 --> J[Cross-force mechanism reconciliation]
-    J --> O[Options + deterministic scenarios]
-    O --> B[Draft board brief]
-    B --> C[Independent challenge]
-    C --> Y[Board-language revision]
-    Y --> X[Citation + calculation + disclosure gates]
-    X -->|one bounded repair| Y
-    X --> A[Human approval]
-    A --> P[Publish memo, pack, Q&A, and audit sidecar]
+    R1 & R2 & R3 & R4 & R5 --> S[Application-owned balanced source selection]
+    S --> L[DNS-pinned HTML/text capture]
+    L --> V[Frozen promoted-evidence snapshot]
+    I --> E[Deterministic economics calculator]
+    V --> RALPH[Ralph supervisor]
+    E --> RALPH
+    RALPH --> F[Fresh analysis StateGraph]
+    F --> C[Independent deterministic evaluator]
+    C -->|typed open gaps| RALPH
+    C -->|draft criteria pass| B[Achieved board brief]
+    C -->|hard gap or limits| X[Blocked report]
+    B --> A[Exact-content human approval]
+    A -->|four approvals| P[Publishable memo and evidence register]
+    A -->|rejection| X
 ```
 
-### Why LangGraph is the outer control plane
+### Why the application, Ralph, and LangGraph have separate control duties
 
-The top-level process is explicit and consequential. LangGraph should own:
+The top-level process is explicit and consequential. The implemented division is:
 
-- durable run state and checkpoints;
-- fan-out/fan-in over exactly five forces;
-- deterministic routing;
-- bounded retries and repair loops;
-- human review and resume;
-- run-level concurrency limits;
-- observable node boundaries.
+- the application service owns acquisition sequencing, durable repository
+  boundaries, startup recovery, and pre-synthesis calculation;
+- the inner LangGraph owns fan-out/fan-in over exactly five forces,
+  deterministic routing, challenge, and one bounded local repair;
+- the Ralph supervisor owns fresh analysis attempts, the goal ledger, typed gap
+  directives, attempt/budget/stall limits, and completion status; and
+- human approval is an immutable post-generation workflow bound to the exact
+  brief fingerprint.
+
+The service calls one Ralph `step()` at a time and persists the completed
+attempt, goal projections, and `ralph_checkpoint` before another retry.
+`RalphSupervisor.build_meta_graph()` exposes the same transition contract as an
+optional compiled StateGraph. The local API has no general pause/resume endpoint;
+startup fails interrupted nonterminal work closed.
 
 The current code uses `Send` for both five-force research and five-force
 assessment. This is the map/reduce use case described by the current LangGraph
@@ -223,6 +229,13 @@ a per-model harness profile hides those schemas, disables the general-purpose
 subagent, and a response middleware rejects guessed calls. `StateBackend` cannot
 reach the host filesystem or execute a host shell. A mocked oMLX HTTP contract
 test locks this behavior against dependency upgrades.
+
+Each force worker is instructed to issue one parallel batch. Middleware executes
+at most five searches, returns explicit limit errors for excess calls, and still
+allows the model to produce its typed bundle. Successful searches are stamped
+with force-scoped sequence lineage and synchronously persisted before tool
+results return; deterministic ordering removes parallel completion timing from
+capture selection, and later bundle failure cannot erase completed discovery.
 
 The application records every executed query and hit in a run-scoped immutable
 ledger, reconciles every model-nominated URL to that ledger, and mints opaque
@@ -255,7 +268,7 @@ reliability, and structured-output accuracy—not from popularity.
 | Component | Baseline | Role |
 |---|---:|---|
 | Python | 3.12.13 | Project runtime |
-| LangGraph | 1.2.11 | Outer durable workflow |
+| LangGraph | 1.2.11 | Inner analysis graph and optional Ralph transition graph |
 | Deep Agents | 0.7.8 | Bounded research harness |
 | langchain-openai | 1.6.0 | oMLX client model |
 | ddgs | 9.15.0 | DuckDuckGo discovery adapter |
@@ -278,46 +291,47 @@ AnalysisState
 │   ├── claims[]
 │   └── claim_evidence_links[]
 ├── force_assessments[5]
-├── scenario_inputs + calculator_results
+├── scenario_economics[]
+├── cost_of_delay
 ├── board_brief
 ├── challenge_report
 ├── quality_report
 └── repair_count
 ```
 
-The implemented `AnalysisState` currently includes the decision frame, research
-bundles, evidence ledger, five assessments, brief, challenge, quality report,
-and repair count. Scenario inputs/results remain standalone deterministic
-calculators until the complete vertical slice wires them into the graph.
+Finance-owned input ranges are validated and calculated before the first Ralph
+attempt. The exact `ScenarioEconomicsResult` and `CostOfDelayResult` values enter
+the graph state, board synthesis, independent challenge, result artifact, and—if
+present—the conditional economics-coherence criterion. The model never
+recalculates them.
 
-A run should eventually persist:
+A completed run writes only these rendered local files:
 
 ```text
 runs/<run-id>/
-├── manifest.json
-├── decision-contract.json
-├── public-queries.jsonl
-├── source-index.jsonl
-├── source-snapshots/
-├── evidence-ledger.json
-├── scenario-inputs.json
-├── scenario-results.json
-├── force-assessments.json
-├── challenge.json
-├── board-brief.json
 ├── board-brief.md
-└── review-signoffs.json
+├── audit-sidecar.json
+└── evidence.csv
 ```
 
-The manifest records model id, endpoint identity without secrets, package
-versions, prompt hashes, source retrieval times, organization-context version,
-calculator version, configuration fingerprint, and human approvals.
+SQLite is the durable system of record. It contains run/attempt/goal rows;
+immutable query, hit, capture, artifact, and approval ledgers; acquisition
+decision-frame/research-bundle checkpoints; a checkpoint after every completed
+Ralph step; final typed artifacts; and approval-time result revisions. The public
+API downloads only the memo and evidence register, reconstructed from immutable,
+hash-verified SQLite payloads. The richer audit sidecar stays on the protected
+local filesystem.
 
-For development, an in-memory or SQLite checkpointer is adequate. A fresh graph
-run explicitly replaces reducer-backed fan-in fields, including when a thread id
-is reused. Production needs an approved durable store, an explicit safe
-serialization allowlist (never pickle fallback), tenant isolation, encryption,
-retention rules, and recovery testing.
+The service does not use a live graph checkpointer as a computation-resume
+mechanism. A fresh graph attempt explicitly replaces reducer-backed fan-in
+fields and receives a new thread ID. API startup changes abandoned `created`,
+`acquiring_evidence`, and `verifying` runs to `failed`, closes open attempts, and
+appends a failure artifact. The persisted checkpoint supports audit and failure
+diagnosis; it does not continue a partly completed model or network call.
+
+SQLite, WAL/SHM files, `.env`, and rendered artifacts are local plaintext. An
+enterprise profile needs encryption, identity/tenant isolation, retention,
+recovery testing, and signed external manifests if non-repudiation is required.
 
 ## 8. Evidence contract
 
@@ -341,22 +355,32 @@ current evidence and must not substantiate a board-visible factual claim.
 The current `ddgs` package is a third-party metasearch library. The adapter sets
 `backend="duckduckgo"` explicitly because the default `auto` mode can use other
 engines. A result title and snippet become `SearchHit` discovery metadata only.
+The exact DDGS no-results sentinel is a successful empty result. A filtered empty
+query gets one unfiltered retry against that same backend and records the
+effective relaxed filter; unfiltered emptiness stays empty. Timeout, rate-limit,
+and other provider exceptions fail closed.
 
 A source can be promoted to `EvidenceItem` only after the application:
 
 - follows a run-scoped source id returned by search;
-- validates the URL and every redirect;
-- captures permitted content within size/type limits;
+- validates the URL and every redirect, and pins a revalidated public IP at the
+  connection boundary;
+- captures bounded HTML, XHTML, or plain-text content (PDF is not supported);
 - hashes the captured representation;
-- records publisher, publication date, retrieval time, and applicability;
-- extracts a passage that actually supports or contradicts a claim.
+- records publisher host, retrieval time, and declared applicability; and
+- extracts an exact quote locator for a supporting or contradicting claim link.
+
+The application chooses candidates round-robin across all five force-specific
+hit sets and prefers publisher diversity within that balance. The model cannot
+allocate the capture budget to only convenient sources. A live run fails if it
+cannot capture promotable evidence for every force.
 
 The `EvidenceItem` schema already refuses public evidence without publisher,
 HTTP(S) URL, and content hash; it also enforces compatible origin/source-class
 pairs so a user assertion cannot masquerade as regulator evidence. Search
 snippets cannot be promoted into evidence.
 
-### Source preference
+### Source preference and current conservative classifier
 
 Research prioritizes, in order appropriate to the claim:
 
@@ -372,6 +396,16 @@ review. A source's prestige does not guarantee that it applies to the relevant
 entity, jurisdiction, product, or time period; authority, freshness,
 applicability, and agreement are scored separately.
 
+The MVP does not ask the model to classify or score captured sources. Application
+policy recognizes a narrow HTTPS regulator-domain set and HTTPS academic-domain
+set; all other captured public pages fall back to the least-authoritative
+promotable `vendor` class. Quality is assigned conservatively as 0.9 for
+recognized regulators, 0.8 for recognized academic hosts, and 0.55 otherwise;
+freshness is 0.5 and applicability 0.6 because publication dates and
+organization-specific applicability are not extracted by the HTML boundary.
+These values prioritize review and deliberately prevent an unknown page from
+clearing a material-fact gate by itself.
+
 ### Contradiction is preserved
 
 Each claim-evidence link states `supports`, `contradicts`, or `context`. The
@@ -381,6 +415,12 @@ brief must include its strongest counterargument.
 
 Automated evidence scores prioritize review. They are not probabilities that a
 claim is true.
+
+Every `ClaimEvidenceLink` includes a `supporting_quote` that must occur verbatim
+in the captured excerpt. For fact and inference claims, the quality gate also
+requires minimum lexical overlap between the claim and quote. This is a strict
+locator/relevance screen, not independent semantic entailment or proof that the
+publisher, quote, or claim is true.
 
 ## 9. Five-force assessment contract
 
@@ -673,26 +713,30 @@ service without changing the graph.
 
 ### Deterministic target gates
 
-The Slice-0 gate currently enforces contract integrity, canonical claim/ledger
-identity, positive supporting-link thresholds, assumption status, five-force
-shape, and exact-revision multi-role approvals. Numeric ownership,
-claim-specific counterevidence/gaps, and recommendation-level gate coverage are
-acceptance criteria for the integrated vertical slice.
+The implemented definition of done combines typed contracts, the deterministic
+quality gate, the independent Ralph evaluator, and exact-revision human
+approval. It enforces:
 
 - Exactly five force assessments, each once.
 - Every material factual or inferential claim resolves to a positive supporting
-  link with minimum entailment and usable source strength; contradictory or
-  contextual links do not satisfy support.
+  link with usable source strength, an exact quote locator, and minimum lexical
+  alignment. The model-supplied entailment score cannot override a missing or
+  unrelated quote, and the combined screen is not semantic proof.
 - Every board-embedded claim is identical to its canonical evidence-ledger claim;
   reusing an id with rewritten semantics fails publication.
 - Every claim/evidence/assumption id is unique and referentially valid.
 - Search snippets never appear as evidence.
 - Model priors are visibly labeled and never promoted to current fact.
-- Material claims expose contrary evidence or an explicit evidence gap.
-- Every number resolves to calculator inputs, formulas, basis ids, and owner.
-- No-action and at least two action alternatives are compared.
-- Analogies include where they break.
-- Recommendation includes stop/accelerate conditions.
+- The independent challenge names a canonical contrary claim or contradictory
+  link, and board-visible dissent cites that same contrary basis.
+- When finance-owned scenario/delay inputs are present, their exact deterministic
+  results reach synthesis and challenge; wholly negative ranges cannot be hidden
+  behind an attractive action recommendation.
+- The board brief compares no action and states the smallest sensible commitment.
+- Every requested audience receives a typed analogy with an explicit breaking
+  point; a tautological restatement fails.
+- The decision frame and board brief preserve the exact user question and supplied
+  market boundary.
 - One bounded quality-repair attempt; unresolved errors remain visible.
 - Strategy, finance, technology, and risk approvals for the exact brief revision
   are required to publish; a rejection or any content change blocks publication.
@@ -701,7 +745,7 @@ acceptance criteria for the integrated vertical slice.
 
 - Porter correctness and market-boundary quality;
 - evidence precision and source authority;
-- citation entailment and claim coverage;
+- citation locator/alignment, human-reviewed semantic entailment, and claim coverage;
 - freshness, applicability, diversity, and contradiction handling;
 - uncertainty calibration and willingness to say unknown;
 - deterministic numerical correctness;
@@ -744,16 +788,22 @@ strategy, finance, technology risk, and the relevant sector own acceptance.
 
 - deterministic offline runtime and complete golden demo;
 - structured local-oMLX framer, research, assessment, composer, and challenger;
-- immutable query/hit ledger, safe HTML/text capture, content hashes, and evidence
-  promotion;
-- outer Ralph meta-graph with explicit criteria, fresh attempts, gap directives,
-  immutable evidence snapshots, and bounded termination;
-- Markdown, JSON, and CSV artifacts with SQLite WAL persistence;
-- deterministic scenario economics and cost-of-delay rendering;
+- durable force-by-force query/hit acquisition, application-owned balanced source
+  selection, DNS-pinned HTML/text capture, policy-owned conservative scores,
+  exact quote locators, synchronous per-search durability, deterministic
+  force-scoped lineage, content hashes, and evidence promotion;
+- Ralph supervisor with strict decision/evidence/fidelity/analogy/counterevidence
+  criteria, conditional economics, fresh attempts, gap directives, immutable
+  evidence snapshots, per-step checkpoints, and bounded termination;
+- Markdown, JSON, and CSV local artifacts with SQLite WAL persistence and
+  immutable memo/register-only API downloads;
+- deterministic scenario economics and cost-of-delay calculation before
+  synthesis, challenge, and Ralph verification;
 - loopback FastAPI, CLI, and Contingency Atlas-inspired decision-room UI;
 - Strategy, Finance, Technology, and Risk exact-content approval gate;
-- restart hydration, local operations scripts, threat model, DFDs, ERD, ADRs, and
-  offline automated verification.
+- recursive API redaction, fail-closed interrupted-run startup recovery, restart
+  hydration of completed results, local operations scripts, threat model, DFDs,
+  ERD, ADRs, and offline automated verification.
 
 ### Enterprise expansion (future)
 

@@ -1,7 +1,7 @@
 # Security and trust model
 
 Status: local single-user threat model  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 The most important security property is not "the model is local." It is that
 confidential inputs, public egress, untrusted content, model capabilities,
@@ -12,7 +12,9 @@ evidence promotion, and publication authority are separated and auditable.
 This model assumes:
 
 - one trusted operator on a managed workstation;
-- UI, FastAPI, SQLite, artifacts, and oMLX bind to loopback;
+- UI and FastAPI bind to loopback, and the default oMLX endpoint is loopback;
+- SQLite, generated artifacts, and `.env` are local plaintext files protected by
+  the workstation account and storage controls;
 - the operating-system account and repository are trusted;
 - public egress is limited to DuckDuckGo and registered HTTP(S) source hosts;
 - no untrusted user has local shell or filesystem access;
@@ -86,6 +88,10 @@ Crossing from Zone 4 back to Zone 2 is the principal content-integrity boundary.
   `PublicResearchAssignment`; the egress policy rejects matching queries.
 - Public queries have length bounds. Search explicitly selects the DuckDuckGo
   backend and has no hidden provider fallback.
+- DDGS's exact no-results sentinel is treated as an empty result. A
+  recency-filtered empty result gets one unfiltered retry on that same backend;
+  timeouts, rate limits, and other provider errors fail closed rather than being
+  confused with empty evidence.
 - Remote model endpoints are rejected unless
   `PFA_ALLOW_REMOTE_MODEL_ENDPOINT=true`; non-loopback remote endpoints also
   require HTTPS.
@@ -106,9 +112,16 @@ policy for sensitive deployments.
 - Deep Agents filesystem/shell scaffolding is excluded for the exact model
   profile; the general-purpose subagent is disabled.
 - Middleware rejects guessed or hidden tool names.
-- Model and search tool calls have explicit per-run limits.
+- Each force worker is instructed to issue one parallel batch. The hard tool
+  limit executes at most five searches and returns explicit errors for excess
+  calls while still allowing typed bundle synthesis; model calls are also
+  bounded.
 - Search candidates are reconciled to URLs actually observed by the recording
   provider.
+- The recording boundary stamps force-scoped sequence IDs and synchronously
+  persists every successful query/hit execution before returning the tool result
+  to the model. Concurrent records are deterministically sorted by lineage, and
+  partial discovery remains durable if later bundle generation fails.
 
 These controls constrain consequences; they do not make model behavior trusted.
 
@@ -120,27 +133,42 @@ These controls constrain consequences; they do not make model behavior trusted.
 - The resolver checks every address before the initial request and every manual
   redirect; private, loopback, link-local, reserved, multicast, and unspecified
   ranges are rejected.
+- The owned HTTP transport resolves again at connection time, revalidates the
+  complete answer set, and connects to a validated IP literal while retaining
+  the original HTTP Host and TLS server name. This removes the independent
+  resolver lookup that would otherwise permit DNS rebinding between validation
+  and connection.
 - Automatic redirects and environment proxies are disabled.
 - Redirect count, timeout, content type, declared/observed response bytes, and
   extracted text length are bounded.
 - HTTPS-to-HTTP redirect downgrade is disabled by default.
-- HTML scripts, styles, templates, SVG, canvas, and `noscript` content are
-  removed during plain-text extraction.
-- Raw bytes and extracted text receive separate SHA-256 hashes.
+- Only HTML, XHTML, and plain text are accepted. Scripts, styles, templates,
+  SVG, canvas, `noscript`, control characters, and markup are removed during
+  plain-text extraction. PDF and other document formats are rejected.
+- Raw response bytes and extracted text receive separate SHA-256 hashes. The
+  raw bytes are not retained by the default store.
 
-Residual SSRF caveat: validation resolves a hostname before the HTTP client
-performs its own connection resolution. A hostile DNS service may exploit that
-time-of-check/time-of-use gap. Before exposing capture to untrusted users or
-high-assurance networks, pin the validated IP to the connection while retaining
-the original TLS hostname, or place fetches in a network sandbox with explicit
-egress allow rules.
+IP pinning prevents application-level DNS time-of-check/time-of-use rebinding,
+but it is not a substitute for network egress enforcement. High-assurance
+deployments should still isolate the fetcher and deny private, local, and
+metadata-service destinations at the operating-system or network layer.
 
 ### Evidence and prompt-injection containment
 
-Search snippets never become `EvidenceItem` instances. Captured content remains
-classified as `untrusted_external_content`; promotion requires source class,
-publisher, captured hash, excerpt, applicability, and quality values. Claims and
-explicit claim-evidence links must reconcile.
+Search snippets never become `EvidenceItem` instances. The application selects
+capture candidates round-robin across the five force-specific hit sets, rather
+than trusting the model to spend the global source budget. Captured content
+remains classified as `untrusted_external_content`; promotion requires source
+class, publisher, captured hash, excerpt, applicability, and quality values.
+Source classification and the conservative quality/freshness/applicability
+scores are policy-owned; the model does not supply them.
+
+Claims and explicit claim-evidence links must reconcile. Each link includes a
+`supporting_quote` that must occur exactly in the captured excerpt. Material fact
+and inference links also pass a conservative lexical-alignment screen. These
+checks detect absent, fabricated, and plainly unrelated locators. They are not
+an independent semantic-entailment model, publisher authentication, or proof of
+truth; a lexically similar quote can still be misleading or misapplied.
 
 Public text can contain prompt-injection instructions. Normalizing HTML to text
 removes executable markup but not malicious language. The structured model
@@ -160,10 +188,21 @@ model with no tools.
 - Repository insertion verifies an approval's run, artifact, and exact SHA-256.
 - Quality evaluation ignores stale approvals and blocks publication when any
   required role is missing or a current reviewer rejected.
+- During live acquisition the decision frame is checkpointed first. Each
+  successful search execution/hit set is committed before its tool result
+  returns; the completed force bundle is checkpointed afterward; successful
+  captures are appended as they complete. Each completed Ralph step stores its
+  manifest, goal rows, and an immutable checkpoint before the next retry.
 
 SHA-256 records are tamper-evident only relative to the local database and
 application. They are not digital signatures. An administrator able to replace
 both can forge history.
+
+The application does not encrypt the database, artifact files, WAL/SHM
+sidecars, backups, or `.env`. These may contain confidential context, captured
+source text, derived/model output, and reviewer identities. Full-disk or
+volume encryption, restrictive permissions, encrypted backups, retention, and
+secure deletion are required deployment controls.
 
 ## Local API and browser controls
 
@@ -172,16 +211,18 @@ The implemented local adapter and launcher provide:
 - a settings-enforced loopback API bind;
 - a local `Host` allowlist and narrow CORS for the configured UI origin;
 - strict API and nested domain request schemas;
-- redaction of internal-context values and restricted terms from run details,
-  including hydrated results after restart;
-- allowlisted logical artifact downloads confined beneath the configured root;
+- recursive redaction of internal-context values and restricted terms from run
+  details, including nested Ralph state and hydrated results after restart;
+- allowlisted logical downloads for only the board memo and evidence register,
+  served from hash-verified immutable SQLite payloads rather than mutable paths;
 - safe React text rendering of public excerpts; and
 - settings responses that omit model API keys and remote-endpoint permission.
 
-Before any wider or higher-assurance deployment, add explicit request-body
-limits, `Cache-Control: no-store` for sensitive responses, authenticated reviewer
-identities, structured log redaction tests, and a restrictive browser Content
-Security Policy.
+The Pydantic request contracts impose field and cardinality limits, but the
+local adapter does not yet impose one global HTTP body-size limit. Before any
+wider or higher-assurance deployment, add that limit, `Cache-Control: no-store`
+for sensitive responses, authenticated reviewer identities, structured log
+redaction tests, and a restrictive browser Content Security Policy.
 
 Loopback is not authentication. A malicious website can attempt localhost CSRF,
 and DNS rebinding can target local services. Host/origin validation and
@@ -196,8 +237,8 @@ records before use.
 | --------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | Confidential query leakage  | Internal client or project name reaches search | Public/internal split, restricted-term egress guard                                          | Operator review and enterprise DLP integration            |
 | Prompt injection            | Captured page tells model to ignore policy     | Text-only capture, no fetch tool in evidence stage, schemas, ID reconciliation, human review | Source allowlist and isolated extractor for high-risk use |
-| SSRF                        | Redirect targets metadata service or localhost | Ledger source IDs, URL and DNS validation on each hop, no auto-redirect/proxy                | Network sandbox or IP-pinned connection                   |
-| Hallucinated citation       | Model invents or edits URL/evidence ID         | Recording provider reconciliation, capture requirement, canonical link gate                  | Human source validation                                   |
+| SSRF                        | Redirect targets metadata service or localhost | Ledger IDs, per-hop URL validation, connection-time DNS validation and IP pinning, no proxy  | Network sandbox and OS/network egress denial              |
+| Hallucinated citation       | Model invents or edits URL/evidence ID         | Provider reconciliation, capture, exact quote locator, lexical screen, canonical link gate   | Human semantic and source validation                      |
 | Tool escalation             | Model guesses shell or filesystem tool         | Exact profile exclusion and tool-call middleware                                             | Contract tests on every dependency/model upgrade          |
 | Model endpoint exfiltration | Operator configures remote HTTP model          | Remote disabled by default; remote requires explicit flag and HTTPS                          | Formal third-party/model data review                      |
 | Artifact tampering          | Brief changed after review                     | Canonical hashes and immutable artifact/approval records                                     | External signing for non-repudiation                      |
@@ -205,6 +246,7 @@ records before use.
 | Resource exhaustion         | Infinite agents, giant pages, repeated retries | Tool, byte, redirect, attempt, budget, and stall bounds                                      | OS/process quotas and concurrency limits                  |
 | Cross-site local request    | Hostile webpage calls local API                | Loopback, Host/Origin allowlist, narrow CORS, JSON POST                                      | Add local auth token if browser threat increases          |
 | Unsafe HTML display         | Evidence page contains script                  | Plain-text extraction and React text rendering                                               | Content Security Policy and no raw HTML APIs              |
+| Local data disclosure       | Database or sidecar copied from workstation     | Git ignores runtime stores; operator-controlled local paths                                  | Disk/backup encryption, permissions, retention, deletion  |
 
 ## Secrets and configuration
 
@@ -213,6 +255,8 @@ records before use.
 - A local development API key such as `test` is not a production secret and
   must not be reused outside the workstation.
 - Restrict database, artifact, and environment-file permissions to the operator.
+- Use workstation full-disk/volume encryption and encrypt every backup that
+  contains the database, WAL/SHM files, artifact directory, or `.env`.
 - Do not put secrets in `public_research_context`, run names, filenames, CLI
   arguments visible in process listings, or screenshots.
 - Rotate a real oMLX API key after suspected disclosure and re-run the model
@@ -225,10 +269,13 @@ records before use.
   calls fail.
 - URL tests cover private IPv4/IPv6, numeric hosts, local suffixes, redirects,
   downgrade, invalid media types, large/chunked bodies, and proxy bypass.
+- Evidence tests cover force-balanced capture selection, policy-owned source
+  scores, exact quote locators, lexical misalignment, and the explicit limits of
+  those checks.
 - Repository tests cover foreign-key failures, immutable triggers, hash
   verification, cross-run artifacts, and approval mismatch.
-- API tests cover Host/Origin checks, response redaction, request sizes, invalid
-  paths, and stale approval conflicts.
+- API tests cover Host/Origin checks, recursive response redaction, schema field
+  sizes, invalid paths, immutable downloads, recovery, and approval conflicts.
 - UI tests verify excerpts are text, not HTML.
 - Dependency and model upgrades rerun tool-call and structured-output canaries.
 

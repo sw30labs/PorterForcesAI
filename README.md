@@ -17,16 +17,27 @@ financial advice.
   composes a board brief, and applies deterministic quality gates.
 - Bounded Deep Agents research workers with only DuckDuckGo search and structured
   output visible to the model. Hidden filesystem, shell, and generic subagent
-  tools are excluded and guessed calls are rejected.
-- A separate, overarching Ralph StateGraph that executes fresh analysis attempts,
-  evaluates explicit goals independently, issues gap-specific repair directives,
-  and stops on success, human judgment, budget, attempt, or stall limits.
-- Immutable query/hit provenance and SSRF-resistant page capture. Search snippets
-  and model memory never become public-web evidence.
+  tools are excluded and guessed calls are rejected. Each force requests one
+  parallel batch, with at most five searches executed; excess calls receive a
+  limit error so the model can still return its typed bundle.
+- DuckDuckGo empty-result handling that distinguishes the provider's exact
+  no-results sentinel from outages. A filtered empty search gets one unfiltered
+  retry on DuckDuckGo; timeout, rate-limit, and other provider errors fail closed.
+- A separate, overarching Ralph supervisor that executes fresh analysis
+  StateGraphs, evaluates explicit goals independently, issues gap-specific
+  repair directives, checkpoints every completed attempt, and stops on success,
+  human judgment, budget, attempt, or stall limits.
+- Immutable query/hit provenance and SSRF-resistant, DNS-pinned HTML, XHTML,
+  and plain-text page capture. Search snippets and model memory never become
+  public-web evidence; PDF capture is deliberately not implemented in this
+  profile.
 - Reproducible NPV, ROI, payback, and cost-of-delay calculators using
   finance-owned ranges. Missing values stay missing; the LLM never invents ROI.
-- SQLite WAL persistence for runs, attempts, goals, searches, captures, artifacts,
-  and exact-content approvals.
+- SQLite WAL persistence for acquisition, Ralph attempts, goals, searches,
+  captures, immutable artifacts, and exact-content approvals. Startup fails
+  interrupted work closed rather than pretending to resume an incomplete model
+  call. Every successful search execution is persisted synchronously before its
+  tool result returns, so discovery survives a later bundle-generation failure.
 - A loopback-only FastAPI service, CLI, and a Contingency Atlas-inspired local
   decision-room UI.
 - Offline demo mode with clearly labeled synthetic evidence and live mode using
@@ -40,7 +51,7 @@ analysis—an oMLX OpenAI-compatible server.
 ```bash
 cp .env.example .env
 uv sync --extra dev
-npm --prefix ui install
+npm --prefix ui ci
 ./scripts/setup_and_run.sh
 ```
 
@@ -54,8 +65,14 @@ uv run porter-forces run examples/global-bank-ai-adoption.demo.json
 ```
 
 The example includes illustrative, explicitly owned scenario ranges so the
-deterministic ROI and cost-of-delay paths are exercised. Artifacts are written
-under `runs/<run-id>/` and their canonical forms are also persisted in SQLite.
+deterministic ROI and cost-of-delay paths are exercised before synthesis and by
+Ralph's acceptance criteria. Artifacts are written under `runs/<run-id>/`; the
+public memo and evidence register are also persisted immutably in SQLite.
+
+The default SQLite database, generated artifacts, and `.env` are ordinary local
+files, not encrypted application containers. Use workstation full-disk
+encryption, restrictive filesystem permissions, and an approved retention path
+for confidential runs.
 
 ## Local oMLX profile
 
@@ -114,7 +131,21 @@ The default draft criteria verify:
 - exactly one valid assessment for every Porter force;
 - claim/evidence integrity against the immutable capture snapshot;
 - an explicit recommendation, no-action case, uncertainty, and smallest
-  reversible commitment.
+  reversible commitment;
+- fidelity to the user's decision and supplied market boundary;
+- a bounded analogy for every requested board audience; and
+- a traceable contrary basis shared by the challenge and board-visible dissent.
+
+When finance-owned scenario or delay inputs are present, Ralph also verifies
+that the exact calculator outputs reach synthesis and the challenge, and that a
+wholly negative range is not obscured by an action recommendation.
+
+Live capture selection is application-owned and balanced across all five force
+candidate sets. Source class and conservative quality/freshness/applicability
+scores come from policy, not model claims. Each claim link must carry an exact
+quote from its captured excerpt and pass a conservative lexical-alignment screen
+for facts and inferences. That screen catches missing or obviously unrelated
+support; it is not semantic entailment or proof that a source is true.
 
 Publication additionally requires Strategy, Finance, Technology, and Risk to
 approve the SHA-256 fingerprint of the exact current brief. Any material edit
@@ -127,18 +158,20 @@ flowchart TB
     UI[Local decision-room UI] --> API[Loopback FastAPI]
     CLI[CLI] --> SVC[Analysis service]
     API --> SVC
-    SVC --> PRE[Evidence acquisition]
-    PRE --> DDG[DuckDuckGo discovery]
-    PRE --> CAP[Safe source capture]
+    SVC --> PRE[Durable evidence acquisition]
+    PRE --> DA[Bounded Deep Agents research]
+    DA --> DDG[DuckDuckGo discovery]
+    PRE --> CAP[DNS-pinned source capture]
     CAP --> SNAP[Immutable evidence snapshot]
-    SVC --> RALPH[Ralph meta-graph]
+    SVC --> CALC[Deterministic economics]
+    SNAP --> RALPH[Ralph supervisor loop]
+    CALC --> RALPH
     RALPH --> LG[Analysis LangGraph]
-    LG --> DA[Bounded Deep Agents research]
-    LG --> CALC[Deterministic economics]
-    LG --> GATE[Evidence and board gates]
+    LG --> GATE[Evidence, communication, economics gates]
     SVC --> DB[(SQLite WAL audit store)]
     SVC --> FILES[Local memo, JSON, and CSV artifacts]
     OMLX[Local oMLX: Qwen test / DeepSeek production] --> LG
+    OMLX --> DA
 ```
 
 Confidential `internal_context` is available only to the local orchestration and

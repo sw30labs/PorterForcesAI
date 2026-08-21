@@ -1,7 +1,7 @@
 # Local operations runbook
 
 Status: local workstation profile  
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 This runbook operates PorterForcesAI as a local analyst toolkit. It deliberately
 does not describe internet deployment.
@@ -56,7 +56,8 @@ sequenceDiagram
     O->>M: Start approved model server on loopback
     O->>O: Run model inventory and live canary
     O->>A: Start local Python API
-    A->>A: Apply SQLite migrations and health checks
+    A->>A: Apply migrations and fail abandoned nonterminal runs closed
+    A->>A: Check SQLite health
     O->>U: Start local UI
     O->>B: Open emitted loopback URL
     B->>A: GET /api/health
@@ -65,7 +66,7 @@ sequenceDiagram
 For a complete local launch, use the repository launcher:
 
 ```bash
-./setup_and_run.sh
+./scripts/setup_and_run.sh
 ```
 
 For separate development processes:
@@ -79,8 +80,15 @@ cd ui
 npm run dev
 ```
 
-Do not bind the standard profile to `0.0.0.0`. Use the exact UI/API ports printed
-by the processes; UI development proxies or calls only the local `/api` origin.
+Do not bind the standard profile to `0.0.0.0`. The standard launcher uses the
+default API and UI ports, 8765 and 3000. If you override `PFA_API_PORT`, also set
+the UI proxy target explicitly or start the two processes separately; the Vite
+proxy does not read Python's `.env` settings.
+
+The Settings view updates a bounded, session-scoped in-memory model/search
+subset; it does not rewrite `.env`. Do not change those values while an analysis
+is active because the local service does not version or lock one settings
+snapshot per run.
 
 ## Readiness checks
 
@@ -110,7 +118,7 @@ curl --fail --silent http://127.0.0.1:8765/api/health
 ```
 
 Confirm database `schema_version`, `journal_mode=wal`, and
-`foreign_keys_enabled=true`. A basic health request does not prove oMLX answer
+`foreign_keys=true`. A basic health request does not prove oMLX answer
 quality or public-network availability.
 
 ## Running analyses
@@ -124,8 +132,9 @@ renderers, repository, API, and UI with visibly labeled synthetic evidence.
 uv run porter-forces demo
 ```
 
-Or create it from the New Analysis view with mode **Demo**. Demo output must not
-be shared as current market research.
+Or turn **Current public evidence** off in the New Analysis view. That compact
+form selects demo mode. Demo output must not be shared as current market
+research.
 
 ### Live analysis
 
@@ -146,22 +155,46 @@ Review exact outbound queries, captured sources, evidence gaps, and quality
 findings before relying on the brief. Search failure or uncaptured pages must
 appear as an explicit gap, never as model-memory evidence.
 
+Live acquisition accepts HTML, XHTML, and plain-text pages only. PDF, office
+documents, images, and JavaScript-only pages are unsupported in the local
+profile. A capture rejection is not permission to cite a search snippet.
+
+The application selects captures round-robin across force-specific candidates
+and assigns conservative source classes and evidence scores from policy. Claim
+links must include an exact quote from the captured excerpt and pass the lexical
+alignment screen for facts/inferences. Operators must still judge semantic
+entailment, applicability, publisher authority, and truth.
+
+Acquisition and calculation occur before synthesis. Queries and successful
+captures are persisted under an acquisition attempt as they occur. In live mode,
+the decision frame is checkpointed first, and every force research bundle plus
+its exact query/hit lineage is durable. More precisely, each successful search
+and hit set is committed synchronously before its tool result returns; a later
+bundle/schema failure therefore retains partial discovery. Force-scoped query
+IDs make concurrent executions deterministic when ordered. Each worker requests
+one parallel batch, and no more than five search calls execute per force.
+Finance-owned NPV/ROI/payback and cost-of-delay results are calculated before the
+first Ralph attempt. Each completed Ralph attempt then persists its report, goal
+rows, and state checkpoint before another retry.
+
 ## Run-state response
 
 ```mermaid
 flowchart TD
     S[Run status] --> R{Value}
-    R -->|created or running| WAIT[Poll and observe attempts]
+    R -->|created, acquiring_evidence, or verifying| WAIT[Poll and observe attempts]
     R -->|achieved_draft| REVIEW[Review brief, evidence, economics, and dissent]
-    R -->|human_required| HUMAN[Supply owned input or exact content-bound approvals]
+    R -->|human_required| HUMAN[Supply exact content-bound publication approvals]
     R -->|publishable| EXPORT[Export only through approved process]
     R -->|blocked| FIX[Read terminal reason and open criterion gaps]
-    R -->|failed| DIAG[Use request ID and sanitized local logs]
+    R -->|failed| DIAG[Use run ID and sanitized local logs]
 ```
 
 Do not restart blindly after `blocked`. If the evidence universe changes, create
-a new run. If the same snapshot remains valid and the gap is generative, a new
-bounded attempt may be appropriate only within configured limits.
+a new run. The local API does not expose a general resume endpoint. An API
+restart marks abandoned `created`, `acquiring_evidence`, and `verifying` rows
+failed, closes open database attempts as interrupted, and records a failure
+artifact; it does not continue a partial model or network call.
 
 ## Human review
 
@@ -169,6 +202,10 @@ At `human_required`, reviewers examine the exact board artifact and its hash.
 Strategy, Finance, Technology, and Risk each approve or reject. A brief change
 invalidates all previous approvals for publication, although old records remain
 in the audit trail.
+
+A rejection blocks that exact revision. The implementation does not ask Ralph
+to rewrite a brief to simulate consent; commission a new revision/run after the
+review comment is resolved.
 
 Finance must own economic assumptions. Risk/legal approval is not delegated to
 the model or inferred from a high quality score.
@@ -181,9 +218,20 @@ Each completed run emits:
 - `audit-sidecar.json`;
 - `evidence.csv`.
 
+The local artifact API exposes only `board_memo` and `evidence_register`. Those
+downloads are reconstructed from immutable, hash-verified SQLite payloads, so a
+later edit to a file under `runs/` is not served. `audit-sidecar.json` is more
+sensitive and is available only through the protected local filesystem, not the
+browser API.
+
 The database stores run/attempt status and immutable provenance records. Runtime
 database and artifact directories are local data, not source code; keep them out
 of Git and apply the organization's retention and classification policy.
+
+SQLite, its WAL/SHM sidecars, generated artifacts, backups, and `.env` are
+plaintext application files. PorterForcesAI does not encrypt them. Use full-disk
+or volume encryption, restrictive account/file permissions, encrypted backups,
+and approved retention and secure-deletion procedures.
 
 The defaults are `data/porter-forces.db` and `runs/<run-id>/`. Override them
 with `PFA_DATABASE_PATH` and `PFA_ARTIFACTS_DIR` before startup when the
@@ -207,9 +255,11 @@ public text; protect it accordingly.
 1. preserve the failed database, WAL, logs, and artifacts read-only;
 2. restore the database and artifacts together;
 3. start the API on loopback;
-4. verify repository health and table counts;
-5. read a sample artifact so its hash is recomputed;
-6. run deterministic tests and a demo before resuming live analyses.
+4. review any runs startup changed to `failed` with an
+   `InterruptedRunError`; do not relabel them complete;
+5. verify repository health and table counts;
+6. download a sample memo/register so its persisted hash is recomputed;
+7. run deterministic tests and a demo before resuming live analyses.
 
 Never repair audit history with direct SQL. Add a migration or explicit recovery
 record and retain the original evidence.
@@ -219,10 +269,12 @@ record and retain the original evidence.
 For the local profile, monitor:
 
 - API health and startup migration result;
-- run status, duration, and terminal reasons;
-- Ralph attempt count, budget units, gap fingerprints, and stalls;
+- run status, acquisition-attempt status, duration, and terminal reasons;
+- Ralph attempt count, checkpoint count, goal states, budget units, gap
+  fingerprints, and stalls;
 - oMLX model ID, latency, schema/tool failures, and context exhaustion;
 - DuckDuckGo errors/rate limits and query counts;
+- per-force search-limit errors and partial-discovery/bundle-failure correlation;
 - capture success/rejection by reason, response bytes, and truncation;
 - quality finding codes and missing approvals;
 - database size/WAL growth and artifact disk usage.
@@ -252,7 +304,11 @@ source bodies, or entire briefs by default.
 ### DuckDuckGo is unavailable
 
 - Confirm approved public egress and DNS.
-- Respect rate limits; do not switch providers silently.
+- An exact DDGS `No results found` condition is not an outage. A filtered search
+  receives one same-provider unfiltered retry; an unfiltered search may
+  truthfully return no hits.
+- Timeout, rate-limit, and other provider exceptions fail closed. Respect rate
+  limits; do not switch providers silently.
 - Use demo mode or end the live run with a visible research gap.
 
 ### Source capture rejects a page
@@ -261,13 +317,16 @@ source bodies, or entire briefs by default.
   downgrade, media type, size, timeout, or empty text.
 - Do not bypass capture or paste a search snippet into evidence.
 - Nominate another public source through a newly recorded search execution.
+- For PDF or other unsupported media, locate an authoritative HTML/plain-text
+  equivalent; do not add an ad hoc parser to a live run.
 
 ### Ralph blocks
 
 - Inspect the last `GoalReport`, directives, terminal reason, and gap fingerprint.
 - Repeated identical fingerprints indicate no measurable progress; changing
   prose alone is not progress.
-- Missing human input is handled as `human_required`, not repeated generation.
+- Missing publication approvals are handled as `human_required`, not repeated
+  generation. Missing finance calculations stay explicitly absent.
 - Refreshing evidence creates a new run and snapshot.
 
 ### Database reports lock/busy
@@ -287,9 +346,14 @@ source bodies, or entire briefs by default.
 
 ## Shutdown
 
-Stop accepting new runs, let current bounded work reach a checkpoint or terminal
-state, stop the UI, stop FastAPI cleanly so SQLite optimizes/closes, and then stop
-oMLX. Preserve blocked and human-required state; do not delete incomplete runs.
+Stop accepting new runs, let the current bounded worker reach a terminal state,
+stop the UI, stop FastAPI cleanly so SQLite optimizes/closes, and then stop oMLX.
+The API shutdown drains the active worker and cancels work that has not started.
+The single-worker queue is process memory; a queued request that has not created
+its repository run is not recoverable after shutdown or crash.
+After an unclean stop, the next API startup records interrupted nonterminal runs
+as failed. Preserve blocked, human-required, and failed history; do not delete
+incomplete runs.
 
 ## Production-readiness gate
 

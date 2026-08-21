@@ -47,6 +47,10 @@ export default defineConfig(async () => {
 
   return {
     server: {
+      // vinext currently ignores Vite's --host CLI flag on this path. Pin the
+      // documented IPv4 loopback explicitly so the UI, API origin, and proxy
+      // agree and the dev server never falls back to IPv6-only localhost.
+      host: "127.0.0.1",
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),

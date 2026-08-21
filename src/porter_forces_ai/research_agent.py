@@ -132,6 +132,7 @@ def create_force_research_agent(
                     "snippet": hit.snippet,
                     "provider": hit.provider,
                     "retrieved_at": hit.retrieved_at.isoformat(),
+                    "trust_classification": "untrusted_search_discovery_metadata",
                 }
                 for hit in hits
             ],

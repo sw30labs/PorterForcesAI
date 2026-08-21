@@ -1,6 +1,6 @@
 # PorterForcesAI project blueprint
 
-Status: greenfield product design and verified foundation  
+Status: implemented and verified local MVP; enterprise hardening remains future work
 Design date: 2026-08-20  
 Initial vertical: AI and cloud decisions in global banking
 
@@ -224,10 +224,11 @@ subagent, and a response middleware rejects guessed calls. `StateBackend` cannot
 reach the host filesystem or execute a host shell. A mocked oMLX HTTP contract
 test locks this behavior against dependency upgrades.
 
-The next slice adds a `read_search_result(source_id)` tool. It receives no
-unrestricted URL fetch and no cross-client memory. The current search tool emits
-unique query ids, but a run-scoped immutable search ledger and deterministic
-candidate reconciliation remain Slice 2 work. Until then, a `ResearchBundle`
+The application records every executed query and hit in a run-scoped immutable
+ledger, reconciles every model-nominated URL to that ledger, and mints opaque
+source ids. A separate capture service—not the model—resolves those ids, applies
+DNS, redirect, content-type, and size controls, and hashes extracted page content.
+The research worker receives no unrestricted fetch capability and search snippets
 cannot be promoted into board evidence.
 
 ### Why oMLX is behind a standard model interface
@@ -441,9 +442,10 @@ The Python calculator owns NPV, ROI, payback, and cost-of-delay arithmetic. ROI
 uses `(total realized benefits - total costs) / total costs`; it is explicitly
 undefined when a scenario has zero total modeled cost. The implemented input
 schema carries low/base/high ranges and required evidence or assumption ids;
-`owner` is currently optional. Slice 4 makes finance ownership mandatory in the
-input workflow and renders missing credible inputs as formulas and information
-requests rather than invented currency values.
+`owner` remains optional in the general calculator contract so imported evidence
+can be represented honestly. The board renderer exposes missing credible inputs
+as formulas and information requests rather than invented currency values;
+organizations can require owners in their submission policy.
 
 Cost of delay is decomposed as:
 
@@ -723,9 +725,9 @@ strategy, finance, technology risk, and the relevant sector own acceptance.
 7. A question containing confidential project names and customer identifiers,
    which must never reach the search adapter.
 
-## 16. Implementation slices
+## 16. Implementation status
 
-### Slice 0 — walking-skeleton foundation (implemented)
+### Foundation (implemented)
 
 - uv-managed Python 3.12 project and locked dependencies;
 - strict Pydantic decision, evidence, force, challenge, and board contracts;
@@ -738,57 +740,31 @@ strategy, finance, technology risk, and the relevant sector own acceptance.
 - evidence-integrity gate and content-bound multi-role publication approvals;
 - offline unit and graph contract tests.
 
-This slice deliberately has no concrete `AdvisorRuntime`, `analyze` command,
-source-capture pipeline, renderer, or board output. It proves contracts and
-boundaries; it is not yet a usable advisory product.
+### Local product vertical (implemented)
 
-### Slice 1 — complete offline vertical slice
+- deterministic offline runtime and complete golden demo;
+- structured local-oMLX framer, research, assessment, composer, and challenger;
+- immutable query/hit ledger, safe HTML/text capture, content hashes, and evidence
+  promotion;
+- outer Ralph meta-graph with explicit criteria, fresh attempts, gap directives,
+  immutable evidence snapshots, and bounded termination;
+- Markdown, JSON, and CSV artifacts with SQLite WAL persistence;
+- deterministic scenario economics and cost-of-delay rendering;
+- loopback FastAPI, CLI, and Contingency Atlas-inspired decision-room UI;
+- Strategy, Finance, Technology, and Risk exact-content approval gate;
+- restart hydration, local operations scripts, threat model, DFDs, ERD, ADRs, and
+  offline automated verification.
 
-- versioned global-bank AI sector pack;
-- prompts as package resources, not Python string sprawl;
-- deterministic fake model/search fixtures for a complete run;
-- JSON and Markdown renderers;
-- run manifest and local persistence;
-- golden KYC and cloud cases.
-
-### Slice 2 — safe live evidence
-
-- query planner using public-safe context only;
-- run-scoped source registry;
-- immutable executed-query/search-hit ledger and deterministic reconciliation of
-  every model-reported source candidate;
-- safe source capture/extraction and snapshot hashes;
-- canonicalization, deduplication, caching, and rate limits;
-- regulator/filing/PDF handling;
-- claim-evidence entailment verifier;
-- network and injection tests.
-
-### Slice 3 — live local intelligence
-
-- wire the existing opt-in oMLX tool/schema doctor canary into analysis readiness;
-- structured decision framer, force analysts, composer, and challenger;
-- benchmark and tune the implemented bounded Deep Agent call/tool limits;
-- benchmarked concurrency and context budgets;
-- checkpoint/resume and human clarification.
-
-### Slice 4 — board product
-
-- one-page memo and board-pack renderers;
-- interactive Board Challenge mode;
-- finance-input workflow and sensitivity display;
-- reviewer comments, signoffs, and publish gate;
-- longitudinal outcome and assumption tracking.
-
-### Slice 5 — sector expansion and enterprise hardening
+### Enterprise expansion (future)
 
 - quant and insurance sector packs with independent golden cases;
 - enterprise identity, authorization, retention, and encrypted persistence;
 - approved search/data integrations;
 - production observability and incident procedures.
 
-Do not add a web UI, vector database, or unrestricted agent swarm before the
-CLI vertical slice passes the evidence and decision-quality evaluations. Per-run
-evidence is small enough that a vector store is not an MVP requirement.
+The UI was added only after the CLI vertical slice passed the evidence and
+decision-quality evaluations. Per-run evidence remains small enough that a vector
+store is not an MVP requirement, and unrestricted agent swarms remain out of scope.
 
 ## 17. Illustrative bank-AI output shape
 
@@ -811,7 +787,7 @@ This is a communication example, not a current market conclusion:
 > owners, a portable architecture, independent validation, and stop/scale
 > thresholds.
 
-The live system must populate that shape from the institution's Decision
+Live mode populates that shape from the institution's Decision
 Contract, evidence ledger, and owned economic inputs.
 
 ## 18. Explicit non-goals

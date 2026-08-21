@@ -89,6 +89,7 @@ def test_publishable_request_pauses_then_four_exact_approvals_publish(tmp_path: 
         assert result.status is ApplicationRunStatus.PUBLISHABLE
         assert result.quality_report is not None
         assert result.quality_report.publishable is True
+        assert result.ralph_state is not None
+        assert result.ralph_state.status.value == "publishable"
     finally:
         service.repository.close()
-

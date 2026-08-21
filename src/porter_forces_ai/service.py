@@ -349,6 +349,15 @@ class AnalysisService:
         )
         if result.quality_report.publishable:
             result.status = ApplicationRunStatus.PUBLISHABLE
+            if result.ralph_state is not None:
+                state_payload = result.ralph_state.model_dump(mode="python")
+                state_payload.update(
+                    status=RalphStatus.PUBLISHABLE,
+                    terminal_reason=(
+                        "all required machine criteria and exact-content human approvals passed"
+                    ),
+                )
+                result.ralph_state = RalphState.model_validate(state_payload)
         else:
             result.status = ApplicationRunStatus.HUMAN_REQUIRED
         self.repository.put_artifact(

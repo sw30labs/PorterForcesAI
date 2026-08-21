@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from itertools import count
 from typing import Any
 
@@ -49,6 +49,45 @@ def _reject_disallowed_tool_calls(response: Any) -> None:
                 )
 
 
+def _has_successful_search_result(messages: Sequence[Any]) -> bool:
+    """Return whether this invocation has completed a usable search tool call."""
+
+    from langchain_core.messages import ToolMessage
+
+    return any(
+        isinstance(message, ToolMessage)
+        and message.name == "search_public_web"
+        and message.status == "success"
+        for message in messages
+    )
+
+
+def _reject_out_of_phase_tool_calls(
+    response: Any,
+    *,
+    search_completed: bool,
+) -> None:
+    """Enforce search-then-synthesize as a two-phase model protocol."""
+
+    _reject_disallowed_tool_calls(response)
+    tool_names = {
+        tool_call.get("name")
+        for message in getattr(response, "result", [])
+        for tool_call in getattr(message, "tool_calls", [])
+    }
+    if not search_completed and (
+        ResearchBundle.__name__ in tool_names
+        or getattr(response, "structured_response", None) is not None
+    ):
+        raise ResearchAgentPolicyError(
+            "research model attempted structured synthesis before search results returned"
+        )
+    if search_completed and "search_public_web" in tool_names:
+        raise ResearchAgentPolicyError(
+            "research model attempted another search after its single completed batch"
+        )
+
+
 def _research_tool_boundary_middleware() -> Any:
     """Reject guessed hidden tool calls even though the profile removes their schemas."""
 
@@ -61,7 +100,10 @@ def _research_tool_boundary_middleware() -> Any:
             handler: Callable[[Any], Any],
         ) -> Any:
             response = handler(request)
-            _reject_disallowed_tool_calls(response)
+            _reject_out_of_phase_tool_calls(
+                response,
+                search_completed=_has_successful_search_result(request.messages),
+            )
             return response
 
         async def awrap_model_call(
@@ -70,7 +112,10 @@ def _research_tool_boundary_middleware() -> Any:
             handler: Callable[[Any], Awaitable[Any]],
         ) -> Any:
             response = await handler(request)
-            _reject_disallowed_tool_calls(response)
+            _reject_out_of_phase_tool_calls(
+                response,
+                search_completed=_has_successful_search_result(request.messages),
+            )
             return response
 
     return ResearchToolBoundaryMiddleware()
@@ -86,15 +131,8 @@ def _single_search_batch_middleware() -> Any:
     """
 
     from langchain.agents.middleware import AgentMiddleware
-    from langchain_core.messages import ToolMessage
-
     def final_request(request: Any) -> Any:
-        completed_search = any(
-            isinstance(message, ToolMessage)
-            and message.name == "search_public_web"
-            and message.status != "error"
-            for message in request.messages
-        )
+        completed_search = _has_successful_search_result(request.messages)
         if not completed_search:
             return request
         if request.response_format is None:

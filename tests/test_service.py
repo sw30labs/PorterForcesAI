@@ -214,6 +214,23 @@ def test_capture_selection_is_force_balanced_and_authority_uses_domain_boundarie
     assert _conservative_source_class("https://evilbis.org/report").value == "vendor"
     assert _conservative_source_class("http://bis.org/report").value == "vendor"
 
+    diverse = _balanced_source_ids(
+        {
+            force: [f"{force.value}-same", f"{force.value}-unique"]
+            for force in FORCE_ORDER
+        },
+        limit=5,
+        diversity_keys={
+            **{f"{force.value}-same": "same.example" for force in FORCE_ORDER},
+            **{
+                f"{force.value}-unique": f"{force.value}.example"
+                for force in FORCE_ORDER
+            },
+        },
+    )
+    assert diverse[0].endswith("-same")
+    assert all(item.endswith("-unique") for item in diverse[1:])
+
 
 def test_live_public_context_is_egress_checked_before_model_creation(
     tmp_path: Path,

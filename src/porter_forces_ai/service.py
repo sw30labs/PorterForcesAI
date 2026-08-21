@@ -6,7 +6,6 @@ import hashlib
 import json
 import threading
 from collections.abc import Mapping
-from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -53,6 +52,7 @@ from porter_forces_ai.evaluation import (
 from porter_forces_ai.quality import QualityReport, brief_fingerprint, evaluate_brief
 from porter_forces_ai.ralph import (
     AttemptContext,
+    AttemptManifest,
     CompletionTarget,
     CriterionOutcome,
     RalphState,
@@ -289,40 +289,44 @@ class AnalysisService:
                 raise AnalysisServiceError(
                     ralph_state.terminal_reason or "Ralph produced no analysis artifact"
                 )
+            # Publish terminal state only after all immutable outputs exist.
+            # The cached in-progress object remains VERIFYING during this phase.
+            result = result.model_copy(deep=True)
             self._hydrate_result(result, ralph_state.latest_output)
             result.status = _application_status(ralph_state.status)
             result.completed_at = datetime.now(UTC)
-            self._persist_success(
-                result,
-                frame=frame,
-                bundles=bundles,
-            )
-            self.repository.set_run_status(run_id, result.status.value)
+            with self.repository.transaction():
+                self._persist_success(
+                    result,
+                    frame=frame,
+                    bundles=bundles,
+                )
+                self.repository.set_run_status(run_id, result.status.value)
             self._cache(result)
             return result
         except Exception as exc:
-            # Preserve the initiating failure. Any open phase is closed so a
-            # restart never projects it as still running.
-            with suppress(Exception):
-                self.repository.finish_open_attempts(
-                    run_id,
-                    status="failed",
-                    completed_at=datetime.now(UTC),
-                )
             result.status = ApplicationRunStatus.FAILED
             result.completed_at = datetime.now(UTC)
             result.error = f"{type(exc).__name__}: {exc}"
-            self.repository.set_run_status(run_id, result.status.value)
-            self.repository.put_artifact(
-                run_id,
-                artifact_type="failure",
-                payload={
-                    "error": result.error,
-                    "completed_at": result.completed_at,
-                    "warnings": result.warnings,
-                    "evidence_snapshot_id": result.evidence_snapshot_id,
-                },
-            )
+            # Persist the initiating failure and close any open phase as one
+            # transaction so restart projection cannot land between states.
+            with self.repository.transaction():
+                self.repository.finish_open_attempts(
+                    run_id,
+                    status="failed",
+                    completed_at=result.completed_at,
+                )
+                self.repository.set_run_status(run_id, result.status.value)
+                self.repository.put_artifact(
+                    run_id,
+                    artifact_type="failure",
+                    payload={
+                        "error": result.error,
+                        "completed_at": result.completed_at,
+                        "warnings": result.warnings,
+                        "evidence_snapshot_id": result.evidence_snapshot_id,
+                    },
+                )
             self._cache(result)
             raise AnalysisServiceError(result.error) from exc
 
@@ -412,6 +416,12 @@ class AnalysisService:
         loaded.artifact_ids = {
             key: value for key, value in loaded.artifact_ids.items() if value
         }
+        board_artifact_id = loaded.artifact_ids.get("board_brief")
+        if board_artifact_id is not None:
+            approvals = self.repository.list_approvals(board_artifact_id)
+            loaded.approvals = list(approvals)
+            if approvals:
+                self._apply_approval_state(loaded, approvals)
         self._cache(loaded)
         return loaded
 
@@ -442,21 +452,22 @@ class AnalysisService:
                 "InterruptedRunError: the previous local process ended before this run "
                 "reached a terminal Ralph state; start a new run from the persisted request"
             )
-            self.repository.set_run_status(
-                record.run_id,
-                ApplicationRunStatus.FAILED.value,
-                updated_at=completed_at,
-            )
-            self.repository.finish_open_attempts(
-                record.run_id,
-                status="interrupted",
-                completed_at=completed_at,
-            )
-            self.repository.put_artifact(
-                record.run_id,
-                artifact_type="failure",
-                payload={"error": message, "completed_at": completed_at},
-            )
+            with self.repository.transaction():
+                self.repository.set_run_status(
+                    record.run_id,
+                    ApplicationRunStatus.FAILED.value,
+                    updated_at=completed_at,
+                )
+                self.repository.finish_open_attempts(
+                    record.run_id,
+                    status="interrupted",
+                    completed_at=completed_at,
+                )
+                self.repository.put_artifact(
+                    record.run_id,
+                    artifact_type="failure",
+                    payload={"error": message, "completed_at": completed_at},
+                )
             with self._lock:
                 self._results.pop(record.run_id, None)
             recovered += 1
@@ -475,6 +486,10 @@ class AnalysisService:
         result = self.get_result(run_id)
         if result is None or result.board_brief is None or result.evidence_ledger is None:
             raise AnalysisServiceError("run is absent or has no completed board brief")
+        if result.ralph_state is None or result.ralph_state.latest_report is None:
+            raise AnalysisServiceError(
+                "run has no completed machine acceptance report; approval cannot override it"
+            )
         artifact_id = result.artifact_ids.get("board_brief")
         if artifact_id is None:
             raise AnalysisServiceError("run has no immutable board-brief artifact")
@@ -485,11 +500,64 @@ class AnalysisService:
             decision=decision,
             brief_sha256=brief_fingerprint(result.board_brief),
         )
-        self.repository.add_approval(run_id, artifact_id, approval)
-        approvals = self.repository.list_approvals(artifact_id)
-        result.approvals = list(approvals)
-        if result.decision_frame is None:
-            raise AnalysisServiceError("run has no decision frame")
+        # Keep the cached prior revision immutable until the complete approval
+        # transaction—including its derived goal and result revision—commits.
+        result = result.model_copy(deep=True)
+        with self.repository.transaction():
+            self.repository.add_approval(run_id, artifact_id, approval)
+            approvals = self.repository.list_approvals(artifact_id)
+            result.approvals = list(approvals)
+            goal_status, reason = self._apply_approval_state(result, approvals)
+            if result.quality_report is None:
+                raise AnalysisServiceError("approval quality report was not produced")
+            approval_sha256 = approval.brief_sha256
+            self.repository.save_goal(
+                run_id,
+                criterion_key="G-human-approval",
+                description=(
+                    "Strategy, finance, technology, and risk approve the exact brief content."
+                ),
+                required=True,
+                status=goal_status,
+                score=1 if goal_status == "pass" else 0,
+                evidence={
+                    "brief_sha256": approval_sha256,
+                    "decisions": [item.model_dump(mode="json") for item in approvals],
+                    "reason": reason,
+                },
+            )
+            self.repository.put_artifact(
+                run_id,
+                artifact_type="approval_quality_report",
+                payload=result.quality_report,
+            )
+            self.repository.set_run_status(run_id, result.status.value)
+            revision = self.repository.put_artifact(
+                run_id,
+                artifact_type="analysis_result_revision",
+                payload=result,
+            )
+        result.artifact_ids["analysis_result"] = revision.artifact_id
+        self._cache(result)
+        return result
+
+    def _apply_approval_state(
+        self,
+        result: AnalysisResult,
+        approvals: tuple[ApprovalRecord, ...],
+    ) -> tuple[str, str]:
+        """Recompute publication state from machine gates and immutable decisions."""
+
+        if (
+            result.board_brief is None
+            or result.evidence_ledger is None
+            or result.decision_frame is None
+            or result.ralph_state is None
+            or result.ralph_state.latest_report is None
+        ):
+            raise AnalysisServiceError(
+                "run lacks a completed machine report required for publication state"
+            )
         result.quality_report = evaluate_brief(
             result.board_brief,
             result.evidence_ledger.evidence,
@@ -498,9 +566,10 @@ class AnalysisService:
             result.evidence_ledger.links,
             approvals,
         )
+        current_fingerprint = brief_fingerprint(result.board_brief)
         current_rejected = any(
             item.decision is ApprovalDecision.REJECT
-            and item.brief_sha256 == approval.brief_sha256
+            and item.brief_sha256 == current_fingerprint
             for item in approvals
         )
         machine_gaps = []
@@ -540,35 +609,7 @@ class AnalysisService:
             state_payload = result.ralph_state.model_dump(mode="python")
             state_payload.update(status=ralph_status, terminal_reason=reason)
             result.ralph_state = RalphState.model_validate(state_payload)
-        self.repository.save_goal(
-            run_id,
-            criterion_key="G-human-approval",
-            description=(
-                "Strategy, finance, technology, and risk approve the exact brief content."
-            ),
-            required=True,
-            status=goal_status,
-            score=1 if goal_status == "pass" else 0,
-            evidence={
-                "brief_sha256": approval.brief_sha256,
-                "decisions": [item.model_dump(mode="json") for item in approvals],
-                "reason": reason,
-            },
-        )
-        self.repository.put_artifact(
-            run_id,
-            artifact_type="approval_quality_report",
-            payload=result.quality_report,
-        )
-        self.repository.set_run_status(run_id, result.status.value)
-        revision = self.repository.put_artifact(
-            run_id,
-            artifact_type="analysis_result_revision",
-            payload=result,
-        )
-        result.artifact_ids["analysis_result"] = revision.artifact_id
-        self._cache(result)
-        return result
+        return goal_status, reason
 
     def _prepare_demo(
         self,
@@ -638,6 +679,7 @@ class AnalysisService:
             force: [] for force in FORCE_ORDER
         }
         source_force: dict[str, ForceName] = {}
+        source_diversity_key: dict[str, str] = {}
         persisted_query_ids: set[str] = set()
 
         def persist_new_searches() -> None:
@@ -663,6 +705,9 @@ class AnalysisService:
                 for hit in registered:
                     registered_by_force[query.force].append(hit.source_id)
                     source_force[hit.source_id] = query.force
+                    source_diversity_key[hit.source_id] = (
+                        urlsplit(hit.url).hostname or hit.url
+                    ).casefold()
 
         bundles: list[ResearchBundle] = []
         for force in FORCE_ORDER:
@@ -687,6 +732,7 @@ class AnalysisService:
         source_ids = _balanced_source_ids(
             registered_by_force,
             limit=self.settings.capture_max_sources,
+            diversity_keys=source_diversity_key,
         )
         if not source_ids:
             raise AnalysisServiceError(
@@ -745,7 +791,7 @@ class AnalysisService:
         self,
         result: AnalysisResult,
         state: RalphState,
-        manifest: Any,
+        manifest: AttemptManifest,
         *,
         database_attempt_number: int,
     ) -> None:
@@ -951,20 +997,34 @@ def _balanced_source_ids(
     by_force: Mapping[ForceName, list[str]],
     *,
     limit: int,
+    diversity_keys: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Select registered hits round-robin so no force monopolizes capture."""
+    """Select force-balanced hits while preferring independent publishers."""
 
     selected: list[str] = []
-    offsets = {force: 0 for force in FORCE_ORDER}
+    remaining = {force: list(by_force.get(force, [])) for force in FORCE_ORDER}
+    used_diversity_keys: set[str] = set()
     while len(selected) < limit:
         progressed = False
         for force in FORCE_ORDER:
-            candidates = by_force.get(force, [])
-            offset = offsets[force]
-            if offset >= len(candidates):
+            candidates = remaining[force]
+            if not candidates:
                 continue
-            selected.append(candidates[offset])
-            offsets[force] = offset + 1
+            selected_index = 0
+            if diversity_keys is not None:
+                selected_index = next(
+                    (
+                        index
+                        for index, source_id in enumerate(candidates)
+                        if diversity_keys.get(source_id, source_id)
+                        not in used_diversity_keys
+                    ),
+                    0,
+                )
+            source_id = candidates.pop(selected_index)
+            selected.append(source_id)
+            if diversity_keys is not None:
+                used_diversity_keys.add(diversity_keys.get(source_id, source_id))
             progressed = True
             if len(selected) >= limit:
                 break

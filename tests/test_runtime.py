@@ -1,7 +1,11 @@
 from decimal import Decimal
+from typing import Any
+
+import pytest
 
 from porter_forces_ai.domain import (
     FORCE_ORDER,
+    DecisionFrame,
     DecisionRequest,
     EvidenceOrigin,
     ForceName,
@@ -14,6 +18,7 @@ from porter_forces_ai.runtime import (
     DeterministicDemoRuntime,
     OmlxAdvisorRuntime,
     RecordingSearchProvider,
+    RuntimeContractError,
 )
 from porter_forces_ai.workflow import build_workflow
 
@@ -178,6 +183,61 @@ def test_omlx_compose_and_challenge_prompts_receive_owned_economics() -> None:
     assert "Every supplied scenario has negative NPV" in compose_text
     assert '"scenario_name": "Controlled workflow deployment"' in compose_text
     assert "finance-owned NPV, ROI, payback" in challenge_text
+
+
+def test_omlx_runtime_uses_strict_schema_transport_and_preserves_failure_cause() -> None:
+    frame = DeterministicDemoRuntime().frame_decision(_request())
+    calls: list[tuple[type[Any], str, list[dict[str, str]]]] = []
+
+    class Invoker:
+        def invoke(self, messages: list[dict[str, str]]) -> object:
+            calls.append((DecisionFrame, "json_schema", messages))
+            return frame
+
+    class Model:
+        def with_structured_output(
+            self,
+            schema: type[Any],
+            method: str,
+        ) -> Invoker:
+            assert schema is DecisionFrame
+            assert method == "json_schema"
+            return Invoker()
+
+    runtime = OmlxAdvisorRuntime(
+        model=Model(),
+        search=object(),  # type: ignore[arg-type]
+        run_id="run-structured-contract",
+    )
+
+    result = runtime.frame_decision(_request())
+
+    assert result.decision_statement == _request().question
+    assert len(calls) == 1
+    assert [message["role"] for message in calls[0][2]] == ["system", "user"]
+
+    class FailingInvoker:
+        def invoke(self, messages: list[dict[str, str]]) -> object:
+            del messages
+            raise ValueError("invalid structured response")
+
+    class FailingModel:
+        def with_structured_output(
+            self,
+            schema: type[Any],
+            method: str,
+        ) -> FailingInvoker:
+            del schema, method
+            return FailingInvoker()
+
+    failing = OmlxAdvisorRuntime(
+        model=FailingModel(),
+        search=object(),  # type: ignore[arg-type]
+        run_id="run-failed-structured-contract",
+    )
+    with pytest.raises(RuntimeContractError, match="failed to produce DecisionFrame") as exc:
+        failing.frame_decision(_request())
+    assert isinstance(exc.value.__cause__, ValueError)
 
 
 def test_recording_search_stamps_force_lineage_before_durability_callback() -> None:

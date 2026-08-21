@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import ssl
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 
+import httpcore
 import httpx
 import pytest
 
@@ -63,6 +65,44 @@ def _public_resolver(host: str, port: int) -> tuple[str, ...]:
     assert host
     assert port in {80, 443}
     return ("93.184.216.34",)
+
+
+class _ScriptedNetworkStream(httpcore.NetworkStream):
+    def __init__(self) -> None:
+        self._response = bytearray(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Length: 15\r\n"
+            b"Connection: close\r\n\r\n"
+            b"Pinned response"
+        )
+        self.writes: list[bytes] = []
+        self.tls_server_names: list[str | None] = []
+        self.tls_contexts: list[ssl.SSLContext] = []
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        del timeout
+        chunk = bytes(self._response[:max_bytes])
+        del self._response[:max_bytes]
+        return chunk
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        del timeout
+        self.writes.append(buffer)
+
+    def close(self) -> None:
+        return None
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.NetworkStream:
+        del timeout
+        self.tls_contexts.append(ssl_context)
+        self.tls_server_names.append(server_hostname)
+        return self
 
 
 def test_discovery_ledger_mints_immutable_content_addressed_records() -> None:
@@ -240,6 +280,83 @@ def test_initial_dns_must_resolve_only_to_global_addresses() -> None:
     with pytest.raises(UnsafeSourceURLError):
         service.capture(source_id)
     assert requests == 0
+
+
+def test_default_transport_pins_validated_ip_and_preserves_tls_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, source_id = _registered_source()
+    resolver_calls: list[tuple[str, int]] = []
+    socket_targets: list[tuple[str, int]] = []
+    stream = _ScriptedNetworkStream()
+
+    def resolver(host: str, port: int) -> tuple[str, ...]:
+        resolver_calls.append((host, port))
+        return ("93.184.216.34", "2606:4700:4700::1111")
+
+    def connect_tcp(
+        backend: httpcore.SyncBackend,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: object = None,
+    ) -> httpcore.NetworkStream:
+        del backend, timeout, local_address, socket_options
+        socket_targets.append((host, port))
+        return stream
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+
+    with SafeSourceCapture(ledger, resolver=resolver) as service:
+        captured = service.capture(source_id)
+
+    assert captured.extracted_text == "Pinned response"
+    assert resolver_calls == [("example.org", 443), ("example.org", 443)]
+    assert socket_targets == [("93.184.216.34", 443)]
+    assert stream.tls_server_names == ["example.org"]
+    assert len(stream.tls_contexts) == 1
+    assert b"host: example.org\r\n" in b"".join(stream.writes).lower()
+
+
+def test_default_transport_rejects_private_dns_rebinding_before_socket_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, source_id = _registered_source()
+    resolver_calls = 0
+    socket_targets: list[str] = []
+
+    def rebinding_resolver(host: str, port: int) -> tuple[str, ...]:
+        nonlocal resolver_calls
+        assert host == "example.org"
+        assert port == 443
+        resolver_calls += 1
+        if resolver_calls == 1:
+            return ("93.184.216.34",)
+        return ("93.184.216.34", "169.254.169.254")
+
+    def connect_tcp(
+        backend: httpcore.SyncBackend,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: object = None,
+    ) -> httpcore.NetworkStream:
+        del backend, port, timeout, local_address, socket_options
+        socket_targets.append(host)
+        raise AssertionError("socket connection must not be attempted")
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+
+    with (
+        SafeSourceCapture(ledger, resolver=rebinding_resolver) as service,
+        pytest.raises(UnsafeSourceURLError, match="private, local"),
+    ):
+        service.capture(source_id)
+
+    assert resolver_calls == 2
+    assert socket_targets == []
 
 
 def test_capture_rejects_non_web_ports_before_dns_or_http() -> None:

@@ -13,6 +13,7 @@ dependencies = [
   "ddgs>=9.15.0,<10",
   "deepagents>=0.7.8,<1",
   "fastapi>=0.116,<1",
+  "httpcore>=1.0,<2",
   "httpx>=0.28,<1",
   "langchain-openai>=1.6.0,<2",
   "langgraph>=1.2.11,<2",

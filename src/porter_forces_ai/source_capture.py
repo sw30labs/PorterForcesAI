@@ -23,6 +23,7 @@ from threading import RLock
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
+import httpcore
 import httpx
 
 from porter_forces_ai.adapters.duckduckgo import canonicalize_public_url
@@ -231,6 +232,11 @@ class DiscoveryLedger:
 
 
 Resolver = Callable[[str, int], Iterable[str]]
+SocketOption = (
+    tuple[int, int, int]
+    | tuple[int, int, bytes | bytearray]
+    | tuple[int, int, None, int]
+)
 
 
 def system_resolver(host: str, port: int) -> tuple[str, ...]:
@@ -241,6 +247,96 @@ def system_resolver(host: str, port: int) -> tuple[str, ...]:
     except OSError as exc:
         raise UnsafeSourceURLError("source hostname could not be resolved") from exc
     return tuple(sorted({str(row[4][0]) for row in rows}))
+
+
+def _resolve_public_addresses(
+    host: str,
+    port: int,
+    resolver: Resolver,
+) -> tuple[str, ...]:
+    """Resolve and validate the complete address set, failing closed.
+
+    It is not sufficient to select one apparently safe result: DNS responses
+    containing both public and non-public addresses are rejected in full so a
+    caller cannot influence which member a lower networking layer selects.
+    """
+
+    try:
+        resolved = tuple(resolver(host, port))
+    except UnsafeSourceURLError:
+        raise
+    except Exception as exc:
+        raise UnsafeSourceURLError("source hostname could not be resolved") from exc
+    if not resolved:
+        raise UnsafeSourceURLError("source hostname resolved to no addresses")
+
+    validated: list[str] = []
+    seen: set[str] = set()
+    for raw_address in resolved:
+        try:
+            address = ip_address(raw_address)
+        except ValueError as exc:
+            raise UnsafeSourceURLError("resolver returned an invalid IP address") from exc
+        if (
+            not address.is_global
+            or address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            raise UnsafeSourceURLError(
+                "source hostname resolves to a private, local, reserved, or non-global address"
+            )
+        normalized = str(address)
+        if normalized not in seen:
+            seen.add(normalized)
+            validated.append(normalized)
+    return tuple(validated)
+
+
+class _PinnedNetworkBackend(httpcore.SyncBackend):
+    """Resolve, validate, and pin each outbound TCP connection.
+
+    HTTP Core still receives the original URL hostname, so it retains the
+    correct HTTP Host header and TLS ``server_hostname`` for SNI and certificate
+    verification. Only the address handed to the operating-system socket is
+    replaced with a validated IP literal, eliminating the second DNS lookup
+    that would otherwise permit rebinding between validation and connection.
+    """
+
+    def __init__(self, resolver: Resolver) -> None:
+        self._resolver = resolver
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SocketOption] | None = None,
+    ) -> httpcore.NetworkStream:
+        addresses = _resolve_public_addresses(host, port, self._resolver)
+        return super().connect_tcp(
+            addresses[0],
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+class _PinnedHTTPTransport(httpx.HTTPTransport):
+    """HTTPX transport whose HTTP Core pool uses the pinned network backend."""
+
+    def __init__(self, resolver: Resolver) -> None:
+        super().__init__(trust_env=False)
+        self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
+            network_backend=_PinnedNetworkBackend(resolver),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,31 +515,7 @@ def _validate_resolved_target(
         raise UnsafeSourceURLError("source URL has no hostname")
     if port not in allowed_ports:
         raise UnsafeSourceURLError("source URL uses a disallowed network port")
-    try:
-        resolved = tuple(resolver(host, port))
-    except UnsafeSourceURLError:
-        raise
-    except Exception as exc:
-        raise UnsafeSourceURLError("source hostname could not be resolved") from exc
-    if not resolved:
-        raise UnsafeSourceURLError("source hostname resolved to no addresses")
-    for raw_address in resolved:
-        try:
-            address = ip_address(raw_address)
-        except ValueError as exc:
-            raise UnsafeSourceURLError("resolver returned an invalid IP address") from exc
-        if (
-            not address.is_global
-            or address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_multicast
-            or address.is_reserved
-            or address.is_unspecified
-        ):
-            raise UnsafeSourceURLError(
-                "source hostname resolves to a private, local, reserved, or non-global address"
-            )
+    _resolve_public_addresses(host, port, resolver)
     return canonical
 
 
@@ -466,6 +538,7 @@ class SafeSourceCapture:
         self._resolver = resolver
         self._owns_client = client is None
         self._client = client or httpx.Client(
+            transport=_PinnedHTTPTransport(resolver),
             follow_redirects=False,
             timeout=self._policy.timeout_seconds,
             trust_env=False,

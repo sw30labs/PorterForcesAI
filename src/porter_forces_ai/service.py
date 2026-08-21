@@ -682,7 +682,11 @@ class AnalysisService:
         }
         source_force: dict[str, ForceName] = {}
         source_diversity_key: dict[str, str] = {}
-        persisted_query_ids: set[str] = set()
+        source_order: dict[str, tuple[str, int]] = {}
+        persisted_searches: dict[
+            str,
+            tuple[ResearchQuery, tuple[SearchHit, ...]],
+        ] = {}
         persistence_lock = threading.Lock()
 
         def persist_search(
@@ -693,7 +697,13 @@ class AnalysisService:
             # append-only ledger/SQLite projection while allowing the network
             # searches themselves to remain concurrent.
             with persistence_lock:
-                if query.query_id in persisted_query_ids:
+                prior = persisted_searches.get(query.query_id)
+                current = (query, hits)
+                if prior is not None:
+                    if prior != current:
+                        raise AnalysisServiceError(
+                            "a persisted query identifier was reused with different content"
+                        )
                     return
                 if query.force is None:
                     raise AnalysisServiceError(
@@ -710,10 +720,11 @@ class AnalysisService:
                     execution,
                     registered,
                 )
-                persisted_query_ids.add(query.query_id)
+                persisted_searches[query.query_id] = current
                 for hit in registered:
                     registered_by_force[query.force].append(hit.source_id)
                     source_force[hit.source_id] = query.force
+                    source_order[hit.source_id] = (query.query_id, hit.rank)
                     source_diversity_key[hit.source_id] = (
                         urlsplit(hit.url).hostname or hit.url
                     ).casefold()
@@ -745,7 +756,13 @@ class AnalysisService:
         # generating model cannot consume the global source budget by nominating
         # only convenient hits for one force.
         source_ids = _balanced_source_ids(
-            registered_by_force,
+            {
+                force: sorted(
+                    source_ids,
+                    key=lambda source_id: source_order[source_id],
+                )
+                for force, source_ids in registered_by_force.items()
+            },
             limit=self.settings.capture_max_sources,
             diversity_keys=source_diversity_key,
         )

@@ -88,12 +88,28 @@ class RecordingSearchProvider:
         self._lock = threading.Lock()
 
     def search(self, request: ResearchQuery | str) -> list[SearchHit]:
-        results = self.delegate.search(request)
-        return self._record(request, results)
+        effective_request = self._prepare_request(request)
+        results = self.delegate.search(effective_request)
+        return self._record(effective_request, results)
 
     async def asearch(self, request: ResearchQuery | str) -> list[SearchHit]:
-        results = await self.delegate.asearch(request)
-        return self._record(request, results)
+        effective_request = self._prepare_request(request)
+        results = await self.delegate.asearch(effective_request)
+        return self._record(effective_request, results)
+
+    def _prepare_request(self, request: ResearchQuery | str) -> ResearchQuery | str:
+        if not isinstance(request, ResearchQuery):
+            return request
+        with self._lock:
+            self._sequence += 1
+            if self.force is None:
+                return request.model_copy(deep=True)
+            return request.model_copy(
+                update={
+                    "query_id": f"Q-{self.force.value}-{self._sequence:04d}",
+                    "force": self.force,
+                }
+            )
 
     def _record(
         self,
@@ -104,17 +120,7 @@ class RecordingSearchProvider:
         recorded_query: ResearchQuery | None = None
         with self._lock:
             if isinstance(request, ResearchQuery):
-                self._sequence += 1
-                recorded_query = (
-                    request.model_copy(
-                        update={
-                            "query_id": f"Q-{self.force.value}-{self._sequence:04d}",
-                            "force": self.force,
-                        }
-                    )
-                    if self.force is not None
-                    else request.model_copy(deep=True)
-                )
+                recorded_query = request.model_copy(deep=True)
                 recorded_results = tuple(
                     hit.model_copy(update={"query_id": recorded_query.query_id})
                     for hit in results
@@ -845,7 +851,10 @@ class OmlxAdvisorRuntime:
                 execution
                 for force in FORCE_ORDER
                 if (recording := self._recordings.get(force)) is not None
-                for execution in recording.executions
+                for execution in sorted(
+                    recording.executions,
+                    key=lambda item: item[0].query_id,
+                )
             )
 
     def set_search_execution_callback(
@@ -977,8 +986,12 @@ class OmlxAdvisorRuntime:
 
         # RecordingSearchProvider stamps force-scoped lineage before each tool
         # result is returned and before its durability callback runs.
-        actual_queries = list(recording.queries)
-        actual_hits = list(recording.hits)
+        ordered_executions = sorted(
+            recording.executions,
+            key=lambda item: item[0].query_id,
+        )
+        actual_queries = [query for query, _hits in ordered_executions]
+        actual_hits = [hit for _query, hits in ordered_executions for hit in hits]
         if not actual_queries:
             raise RuntimeContractError("research worker completed without a public search")
 

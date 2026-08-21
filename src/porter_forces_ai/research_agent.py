@@ -145,7 +145,7 @@ def create_force_research_agent(
         )
 
     limits: list[Any] = [
-        ModelCallLimitMiddleware(run_limit=6, exit_behavior="error"),
+        ModelCallLimitMiddleware(run_limit=8, exit_behavior="error"),
         ToolCallLimitMiddleware(
             tool_name="search_public_web",
             run_limit=5,

@@ -2,7 +2,7 @@
 
 setup:
 	uv sync --extra dev
-	npm --prefix ui install
+	npm --prefix ui ci
 
 test:
 	uv run pytest -q
@@ -12,6 +12,7 @@ check:
 	uv run ruff check .
 	uv run mypy src
 	npm --prefix ui run lint
+	cd ui && npm exec tsc -- --noEmit
 	npm --prefix ui run build
 
 demo:

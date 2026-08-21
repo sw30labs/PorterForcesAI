@@ -20,7 +20,10 @@ if [[ ! -f .env ]]; then
 fi
 
 uv sync --extra dev
-npm --prefix ui install
+npm --prefix ui ci
+
+API_PORT="$(uv run python -c 'from porter_forces_ai.settings import Settings; print(Settings().api_port)')"
+export PFA_UI_API_PROXY="${PFA_UI_API_PROXY:-http://127.0.0.1:${API_PORT}}"
 
 API_PID=""
 UI_PID=""
@@ -36,8 +39,10 @@ API_PID=$!
 npm --prefix ui run dev -- --host 127.0.0.1 --port 3000 &
 UI_PID=$!
 
-echo "PorterForcesAI API: http://127.0.0.1:8765/api/docs"
+echo "PorterForcesAI API: http://127.0.0.1:${API_PORT}/api/docs"
 echo "PorterForcesAI UI:  http://127.0.0.1:3000"
 echo "Press Ctrl-C to stop both local services."
 
-wait -n "${API_PID}" "${UI_PID}"
+while kill -0 "${API_PID}" 2>/dev/null && kill -0 "${UI_PID}" 2>/dev/null; do
+  sleep 1
+done

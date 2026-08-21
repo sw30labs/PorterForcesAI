@@ -47,7 +47,12 @@ class Settings(BaseSettings):
     ralph_max_attempts: int = Field(default=3, ge=1, le=10)
     ralph_max_budget_units: int = Field(default=6, ge=1, le=100)
     ralph_stall_limit: int = Field(default=2, ge=2, le=10)
-    capture_max_sources: int = Field(default=15, ge=1, le=50)
+    capture_max_sources: int = Field(
+        default=15,
+        ge=5,
+        le=50,
+        description="At least one independently captured source slot per Porter force.",
+    )
     capture_timeout_seconds: int = Field(default=20, ge=1, le=90)
     capture_max_bytes: int = Field(default=2_000_000, ge=10_000, le=10_000_000)
 

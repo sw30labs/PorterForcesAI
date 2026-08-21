@@ -12,4 +12,5 @@ __pycache__/
 dist/
 build/
 runs/
-data/private/
+# Runtime stores can contain internal context, captured source text, and audit data.
+data/

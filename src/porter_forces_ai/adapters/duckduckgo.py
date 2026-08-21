@@ -23,8 +23,6 @@ _TRACKING_PARAMETERS = {
     "gclid",
     "mc_cid",
     "mc_eid",
-    "ref",
-    "source",
     "utm_campaign",
     "utm_content",
     "utm_medium",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from enum import StrEnum
@@ -34,6 +35,23 @@ REQUIRED_APPROVAL_ROLES: frozenset[ApprovalRole] = frozenset(
     }
 )
 MIN_USABLE_SUPPORT_CONTRIBUTION = 0.2
+_ALIGNMENT_TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]{2,}")
+_ALIGNMENT_STOPWORDS = frozenset(
+    {
+        "and",
+        "are",
+        "for",
+        "from",
+        "has",
+        "have",
+        "that",
+        "the",
+        "this",
+        "was",
+        "were",
+        "with",
+    }
+)
 
 
 class FindingSeverity(StrEnum):
@@ -315,6 +333,45 @@ def evaluate_brief(
                     artifact_ids=[link.claim_id, link.evidence_id],
                 )
             )
+        linked_claim = canonical_claim_by_id.get(link.claim_id)
+        item = evidence_by_id.get(link.evidence_id)
+        if linked_claim is None or item is None:
+            continue
+        normalized_quote = " ".join(link.supporting_quote.casefold().split())
+        normalized_excerpt = " ".join(item.excerpt.casefold().split())
+        if normalized_quote not in normalized_excerpt:
+            findings.append(
+                QualityFinding(
+                    code="EVIDENCE_QUOTE_NOT_FOUND",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        "A claim-evidence link has no exact quote locator in the captured "
+                        "evidence excerpt."
+                    ),
+                    artifact_ids=[link.claim_id, link.evidence_id],
+                )
+            )
+            continue
+        if link.stance == EvidenceStance.SUPPORTS and linked_claim.material:
+            claim_tokens = _alignment_tokens(linked_claim.statement)
+            quote_tokens = _alignment_tokens(link.supporting_quote)
+            denominator = min(len(claim_tokens), len(quote_tokens))
+            alignment = (
+                len(claim_tokens & quote_tokens) / denominator if denominator else 0
+            )
+            if alignment < 0.2:
+                findings.append(
+                    QualityFinding(
+                        code="SUPPORT_QUOTE_LOW_ALIGNMENT",
+                        severity=FindingSeverity.ERROR,
+                        message=(
+                            "The exact evidence quote has insufficient lexical alignment with "
+                            "the material claim; this deterministic screen is not an entailment "
+                            "or truth probability."
+                        ),
+                        artifact_ids=[link.claim_id, link.evidence_id],
+                    )
+                )
 
     for claim in brief.material_claims:
         missing_evidence = sorted(set(claim.evidence_ids) - evidence_by_id.keys())
@@ -515,3 +572,11 @@ def evaluate_brief(
         draft_valid=draft_valid,
         publishable=draft_valid and approvals_valid,
     )
+
+
+def _alignment_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in _ALIGNMENT_TOKEN.findall(value.casefold())
+        if token not in _ALIGNMENT_STOPWORDS
+    }

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import Response as ContentResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from porter_forces_ai.domain import (
@@ -30,7 +32,6 @@ from porter_forces_ai.service import (
     AnalysisServiceError,
     AnalysisSubmission,
     ApplicationRunStatus,
-    artifact_path_is_within,
     result_etag,
 )
 from porter_forces_ai.settings import Settings
@@ -38,6 +39,10 @@ from porter_forces_ai.settings import Settings
 
 class _ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class ResearchPolicy(_ApiModel):
+    web: bool = False
 
 
 class AnalysisCreateRequest(_ApiModel):
@@ -53,7 +58,8 @@ class AnalysisCreateRequest(_ApiModel):
     internal_context: str | None = Field(default=None, max_length=10_000)
     board_objection: str | None = Field(default=None, max_length=2_000)
     public_research_context: str | None = Field(default=None, max_length=4_000)
-    research_policy: dict[str, Any] = Field(default_factory=dict)
+    evidence_cutoff: date | None = None
+    research_policy: ResearchPolicy = Field(default_factory=ResearchPolicy)
     scenario_economics: list[ScenarioEconomicsInputs] = Field(default_factory=list)
     cost_of_delay: CostOfDelayInputs | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=10)
@@ -67,7 +73,7 @@ class AnalysisCreateRequest(_ApiModel):
         return self
 
     def submission(self) -> AnalysisSubmission:
-        web_enabled = bool(self.research_policy.get("web", False))
+        web_enabled = self.research_policy.web
         mode = self.mode or (AnalysisMode.LIVE if web_enabled else AnalysisMode.DEMO)
         if self.request is not None:
             decision_request = self.request
@@ -98,6 +104,7 @@ class AnalysisCreateRequest(_ApiModel):
                 audience=[BoardAudience.FULL_BOARD],
                 public_research_context=public_context,
                 internal_context=local_context,
+                evidence_cutoff=self.evidence_cutoff,
             )
         return AnalysisSubmission(
             request=decision_request,
@@ -127,12 +134,8 @@ class ApprovalRequest(_ApiModel):
 class SettingsUpdate(_ApiModel):
     endpoint: str | None = None
     model: str | None = None
-    temperature: str | float | None = None
     searchRegion: str | None = None
     maxSources: int | str | None = None
-    requireCapture: bool | None = None
-    requireFourApprovals: bool | None = None
-    redactPrompts: bool | None = None
 
 
 def create_app(
@@ -145,6 +148,7 @@ def create_app(
     app_settings = settings or (service.settings if service is not None else Settings())
     owns_service = service is None
     active_service = service or AnalysisService(app_settings)
+    active_service.recover_interrupted_runs()
     jobs: dict[str, dict[str, Any]] = {}
     jobs_lock = threading.RLock()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="porter-analysis")
@@ -152,7 +156,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> Any:
         yield
-        executor.shutdown(wait=False, cancel_futures=False)
+        # Do not close SQLite beneath an in-flight analysis. Queued work is
+        # cancelled; the current job drains and persists its terminal state.
+        executor.shutdown(wait=True, cancel_futures=True)
         if owns_service:
             active_service.close()
 
@@ -314,17 +320,18 @@ def create_app(
         if active_service.repository.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
         rows = active_service.repository.list_artifacts(run_id)
-        result = active_service.get_result(run_id)
+        public_types = {
+            "board_memo": "board_memo_markdown",
+            "evidence_register": "evidence_register_csv",
+        }
+        available_types = {item.artifact_type for item in rows}
         return {
             "run_id": run_id,
-            "files": (
-                {
-                    name: f"/api/runs/{run_id}/artifacts/{name}"
-                    for name in result.artifact_paths
-                }
-                if result
-                else {}
-            ),
+            "files": {
+                name: f"/api/runs/{run_id}/artifacts/{name}"
+                for name, artifact_type in public_types.items()
+                if artifact_type in available_types
+            },
             "artifacts": [
                 {
                     "artifact_id": item.artifact_id,
@@ -338,12 +345,39 @@ def create_app(
         }
 
     @app.get("/api/runs/{run_id}/artifacts/{artifact_name}")
-    def download_artifact(run_id: str, artifact_name: str) -> FileResponse:
-        result = active_service.get_result(run_id)
-        path = result.artifact_paths.get(artifact_name) if result else None
-        if path is None or not artifact_path_is_within(active_service.settings.artifacts_dir, path):
+    def download_artifact(run_id: str, artifact_name: str) -> ContentResponse:
+        public_types = {
+            "board_memo": (
+                "board_memo_markdown",
+                "text/markdown; charset=utf-8",
+                "board-brief.md",
+            ),
+            "evidence_register": (
+                "evidence_register_csv",
+                "text/csv; charset=utf-8",
+                "evidence-register.csv",
+            ),
+        }
+        contract = public_types.get(artifact_name)
+        if contract is None:
             raise HTTPException(status_code=404, detail="artifact file not found")
-        return FileResponse(path, filename=path.rsplit("/", 1)[-1])
+        artifact_type, media_type, filename = contract
+        artifact = next(
+            iter(
+                active_service.repository.list_artifacts(
+                    run_id,
+                    artifact_type=artifact_type,
+                )
+            ),
+            None,
+        )
+        if artifact is None or not isinstance(artifact.payload, str):
+            raise HTTPException(status_code=404, detail="artifact file not found")
+        return ContentResponse(
+            content=artifact.payload,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     def approve(run_id: str, payload: ApprovalRequest) -> dict[str, Any]:
         try:
@@ -448,13 +482,15 @@ def _run_view(result: AnalysisResult, *, include_details: bool = False) -> dict[
     }
     if include_details:
         details = result.model_dump(mode="json")
-        request = details.get("request")
-        if isinstance(request, dict):
-            request["internal_context"] = {
-                key: "[REDACTED IN API VIEW]" for key in request.get("internal_context", {})
-            }
-            request["restricted_terms"] = []
-        payload["details"] = details
+        secrets = [*result.request.restricted_terms]
+        secrets.extend(result.request.internal_context.keys())
+        secrets.extend(result.request.internal_context.values())
+        details["artifact_paths"] = {
+            name: f"/api/runs/{result.run_id}/artifacts/{name}"
+            for name in ("board_memo", "evidence_register")
+            if name in result.artifact_ids
+        }
+        payload["details"] = _redact_api_value(details, secrets=secrets)
     return payload
 
 
@@ -464,10 +500,41 @@ def _safe_settings(settings: Settings) -> dict[str, Any]:
         "model": settings.llm_model,
         "searchRegion": settings.search_region,
         "maxSources": settings.capture_max_sources,
-        "temperature": "0",
-        "requireCapture": True,
-        "requireFourApprovals": True,
-        "redactPrompts": True,
         "apiHost": settings.api_host,
         "apiPort": settings.api_port,
     }
+
+
+def _redact_api_value(value: Any, *, secrets: list[str]) -> Any:
+    """Remove local-only request data from every nested API projection."""
+
+    patterns = [
+        re.compile(re.escape(secret), re.IGNORECASE)
+        for secret in secrets
+        if len(secret.strip()) >= 3
+    ]
+
+    def redact_text(text: str) -> str:
+        for pattern in patterns:
+            text = pattern.sub("[REDACTED LOCAL TERM]", text)
+        return text
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            cleaned: dict[str, Any] = {}
+            for raw_key, nested in item.items():
+                key = redact_text(str(raw_key))
+                if str(raw_key) == "internal_context":
+                    cleaned[key] = {"redacted": "[REDACTED LOCAL CONTEXT]"}
+                elif str(raw_key) == "restricted_terms":
+                    cleaned[key] = []
+                else:
+                    cleaned[key] = walk(nested)
+            return cleaned
+        if isinstance(item, list):
+            return [walk(nested) for nested in item]
+        if isinstance(item, str):
+            return redact_text(item)
+        return item
+
+    return walk(value)

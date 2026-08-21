@@ -162,6 +162,21 @@ def test_run_attempt_and_goal_lifecycle(repository: SQLiteRunRepository) -> None
     assert repository.table_counts()["attempts"] == 1
 
 
+def test_interrupted_run_can_close_only_its_open_attempts(
+    repository: SQLiteRunRepository,
+) -> None:
+    first_run = repository.create_run({}, run_id="RUN-open-attempt")
+    second_run = repository.create_run({}, run_id="RUN-other-attempt")
+    repository.start_attempt(first_run, 1, attempt_id="ATT-open")
+    repository.start_attempt(second_run, 1, attempt_id="ATT-other")
+
+    assert (
+        repository.finish_open_attempts(first_run, status="interrupted") == 1
+    )
+    assert repository.finish_open_attempts(first_run, status="interrupted") == 0
+    assert repository.finish_open_attempts(second_run, status="interrupted") == 1
+
+
 def test_get_and_list_runs_return_typed_filtered_records(
     repository: SQLiteRunRepository,
 ) -> None:

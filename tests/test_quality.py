@@ -32,7 +32,10 @@ def _evidence(*, quality_score: float = 0.8) -> EvidenceItem:
         source_class=SourceClass.USER_ASSERTION,
         title="Controlled fixture",
         publisher="Finance owner",
-        excerpt="The controlled fixture directly supports the material claim.",
+        excerpt=(
+            "The controlled fixture shows that a controlled deployment creates "
+            "decision-relevant evidence."
+        ),
         quality_score=quality_score,
         freshness_score=1,
         applicability_score=1,
@@ -59,6 +62,9 @@ def _link(
         claim_id="C-primary",
         evidence_id="E-primary",
         stance=stance,
+        supporting_quote=(
+            "a controlled deployment creates decision-relevant evidence"
+        ),
         entailment_score=entailment_score,
         rationale="The fixture directly addresses the claim.",
     )
@@ -319,6 +325,43 @@ def test_zero_strength_evidence_cannot_validate_or_publish_material_claim() -> N
     assert report.draft_valid is False
     assert report.publishable is False
     assert "INSUFFICIENT_ENTAILED_SUPPORT" in {item.code for item in report.findings}
+
+
+def test_model_entailment_score_cannot_validate_an_unaligned_claim() -> None:
+    evidence = _evidence()
+    invented = _claim().model_copy(
+        update={
+            "statement": (
+                "Mars formally licensed the institution to operate a banking franchise on "
+                "Jupiter."
+            )
+        }
+    )
+    brief = _brief(invented)
+    link = _link(entailment_score=1).model_copy(
+        update={"supporting_quote": evidence.excerpt}
+    )
+
+    report = evaluate_brief(brief, [evidence], [invented], [], [link])
+
+    assert report.draft_valid is False
+    assert "SUPPORT_QUOTE_LOW_ALIGNMENT" in {
+        item.code for item in report.findings
+    }
+
+
+def test_claim_link_quote_must_exist_verbatim_in_captured_excerpt() -> None:
+    evidence = _evidence()
+    claim = _claim()
+    brief = _brief(claim)
+    link = _link().model_copy(
+        update={"supporting_quote": "A quote that the source never contained."}
+    )
+
+    report = evaluate_brief(brief, [evidence], [claim], [], [link])
+
+    assert report.draft_valid is False
+    assert "EVIDENCE_QUOTE_NOT_FOUND" in {item.code for item in report.findings}
 
 
 @pytest.mark.parametrize(

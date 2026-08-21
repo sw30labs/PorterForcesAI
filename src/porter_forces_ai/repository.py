@@ -605,6 +605,27 @@ class SQLiteRunRepository:
                     "attempt_id does not exist or the attempt is already complete"
                 )
 
+    def finish_open_attempts(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        completed_at: datetime | None = None,
+    ) -> int:
+        """Close attempts orphaned by an interrupted local process."""
+
+        timestamp = _utc_iso(completed_at or _utc_now())
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE attempts
+                SET status = ?, completed_at = ?
+                WHERE run_id = ? AND completed_at IS NULL
+                """,
+                (_require_text(status, "status"), timestamp, run_id),
+            )
+            return cursor.rowcount
+
     def save_goal(
         self,
         run_id: str,

@@ -394,6 +394,11 @@ class ClaimEvidenceLink(ContractModel):
     claim_id: str = Field(pattern=r"^C-[A-Za-z0-9_-]+$")
     evidence_id: str = Field(pattern=r"^E-[A-Za-z0-9_-]+$")
     stance: EvidenceStance
+    supporting_quote: str = Field(
+        min_length=8,
+        max_length=2_000,
+        description="Verbatim locator text that must occur in the captured evidence excerpt.",
+    )
     entailment_score: float = Field(
         ge=0,
         le=1,
@@ -419,7 +424,7 @@ class SourceCandidate(ContractModel):
     url: str = Field(min_length=8, max_length=4_000)
     title: str = Field(min_length=1, max_length=1_000)
     why_relevant: str = Field(min_length=3, max_length=2_000)
-    query_id: str | None = None
+    query_id: str = Field(pattern=r"^Q-[A-Za-z0-9_-]+$")
 
     @field_validator("url")
     @classmethod
@@ -449,6 +454,13 @@ class ResearchBundle(ContractModel):
             raise ValueError("hypothesis identifiers must be unique within a bundle")
         if len(set(query_ids)) != len(query_ids):
             raise ValueError("query identifiers must be unique within a bundle")
+        unknown_candidate_queries = {
+            candidate.query_id for candidate in self.source_candidates
+        } - set(query_ids)
+        if unknown_candidate_queries:
+            raise ValueError(
+                "every source candidate must reference a query in the same bundle"
+            )
         return self
 
 

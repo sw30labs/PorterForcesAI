@@ -127,9 +127,13 @@ class DuckDuckGoSearchProvider:
         try:
             rows = self._text(client, query=safe_query, recency=recency)
         except Exception as exc:  # provider exceptions are deliberately hidden at the port
-            if recency is None or not _is_no_results_error(exc):
+            if not _is_no_results_error(exc):
                 raise SearchUnavailableError("DuckDuckGo search failed") from exc
-            relaxed_recency = True
+            # DDGS represents a legitimate empty result set as an exception.  It is
+            # not a provider outage: an unfiltered query has nothing to retry, while
+            # a filtered query gets one truthful same-provider relaxation below.
+            rows = []
+            relaxed_recency = recency is not None
         else:
             # DDGS currently raises for this case, but alternate client versions may return
             # an empty list. Treat both representations of an empty filtered result alike.
@@ -139,7 +143,10 @@ class DuckDuckGoSearchProvider:
             try:
                 rows = self._text(client, query=safe_query, recency=None)
             except Exception as exc:  # provider details remain behind the adapter boundary
-                raise SearchUnavailableError("DuckDuckGo search failed") from exc
+                if _is_no_results_error(exc):
+                    rows = []
+                else:
+                    raise SearchUnavailableError("DuckDuckGo search failed") from exc
             if isinstance(request, ResearchQuery):
                 # RecordingSearchProvider observes the request after this call. Mutating only
                 # the effective filter keeps the persisted discovery record truthful: the

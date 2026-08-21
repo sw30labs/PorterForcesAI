@@ -139,6 +139,39 @@ def test_adapter_retries_no_results_without_recency_on_same_backend() -> None:
     assert [hit.query_id for hit in hits] == ["Q-recency"]
 
 
+def test_adapter_returns_empty_when_unfiltered_retry_has_no_results() -> None:
+    class EmptyClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def text(self, **kwargs: object) -> list[dict[str, str]]:
+            self.calls.append(kwargs)
+            raise DDGSException("No results found.")
+
+    client = EmptyClient()
+    request = ResearchQuery(
+        query_id="Q-empty-fallback",
+        query="fintech acquires bank charter 2024 2025",
+        rationale="Find current entrant evidence",
+        recency="y",
+    )
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    assert provider.search(request) == []
+    assert [call["timelimit"] for call in client.calls] == ["y", None]
+    assert request.recency is None
+
+
+def test_adapter_returns_empty_for_unfiltered_no_results() -> None:
+    class EmptyClient:
+        def text(self, **_: object) -> list[dict[str, str]]:
+            raise DDGSException("No results found")
+
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: EmptyClient())
+
+    assert provider.search("narrow public evidence query") == []
+
+
 @pytest.mark.parametrize(
     "provider_error",
     [TimeoutException("timed out"), RatelimitException("rate limited")],

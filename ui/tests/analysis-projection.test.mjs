@@ -97,6 +97,7 @@ test("projects a completed canonical response without fixture substitution", () 
   assert.equal(result.forces.length, 5);
   assert.equal(result.forces[0].evidenceFor, "Captured evidence supports the entry thesis.");
   assert.equal(result.evidence[0].authority, 54);
+  assert.equal(result.evidence[0].status, "Captured");
   assert.equal(result.scenarios[0].npvBase, 20);
   assert.equal(result.scenarios[0].unitLabel, "USD");
   assert.deepEqual(result.artifactUrls, {
@@ -108,6 +109,25 @@ test("projects a completed canonical response without fixture substitution", () 
     "Pending",
     "Pending",
   ]);
+});
+
+test("projects Ralph's evaluator explanation rather than inventing an event message", () => {
+  const payload = completedPayload();
+  payload.details.ralph_state.attempts = [{
+    attempt_number: 1,
+    completed_at: "2026-08-21T12:00:00Z",
+    report: {
+      evaluations: [{
+        criterion_id: "G-evidence-integrity",
+        outcome: "pass",
+        explanation: "The frozen evidence snapshot passed deterministic gates.",
+      }],
+    },
+  }];
+
+  const result = projectCompletedAnalysis(payload);
+  assert.ok(result);
+  assert.match(result.logs[0].text, /frozen evidence snapshot passed deterministic gates/i);
 });
 
 test("hydrates the latest backend approval record and exact fingerprint", () => {

@@ -629,7 +629,7 @@ function NewAnalysisView({
             </div>
             <div className="form-grid two">
               <label className="field"><span>Completion target</span><select value={form.target} onChange={(event) => update("target", event.target.value as AnalysisFormState["target"])}><option value="draft">Machine-verified draft</option><option value="publishable">Publishable after four approvals</option></select></label>
-              <label className="field"><span>Evidence cutoff</span><input type="date" value={form.evidenceCutoff} onChange={(event) => update("evidenceCutoff", event.target.value)} required/><small>Public evidence after this date is outside the decision record.</small></label>
+              <label className="field"><span>Evidence cutoff</span><input type="date" value={form.evidenceCutoff} onChange={(event) => update("evidenceCutoff", event.target.value)} required/><small>Live capture supports today or a future cutoff. Historical as-of research requires an archive and is rejected.</small></label>
             </div>
           </Panel>
 
@@ -871,7 +871,7 @@ function EvidenceView({ analysis }: { analysis: AnalysisProjection }) {
   }), [analysis.evidence, query, filter]);
   const publishers = new Set(analysis.evidence.map((item) => item.publisher)).size;
   const counterevidence = analysis.evidence.filter((item) => item.stance === "Contradicts").length;
-  const verified = analysis.evidence.filter((item) => item.status === "Verified").length;
+  const captured = analysis.evidence.filter((item) => item.status === "Captured").length;
   const qualityErrors = analysis.quality.findings.filter((item) => item.severity === "error").length;
   const utility = analysis.evidence.length
     ? Math.round(analysis.evidence.reduce((sum, item) => sum + item.authority, 0) / analysis.evidence.length)
@@ -881,7 +881,7 @@ function EvidenceView({ analysis }: { analysis: AnalysisProjection }) {
       <ViewHeader code="05 / SOURCE ROOM" title="Evidence" accent="ledger" description="Search discovers candidates. Only captured, attributable source content can support a board-visible fact." actions={analysis.artifactUrls.evidence_register ? <a className="button secondary" href={analysis.artifactUrls.evidence_register}><Icon name="download" size={15}/>Export ledger</a> : <StatusBadge>Export unavailable</StatusBadge>} />
       <div className="evidence-kpis">
         <div><span>Ledger items</span><b>{analysis.evidence.length}</b><small>canonical records</small></div>
-        <div><span>Captured public sources</span><b className="cyan">{verified}</b><small>URL + content hash</small></div>
+        <div><span>Captured public sources</span><b className="cyan">{captured}</b><small>URL + content hash</small></div>
         <div><span>Independent publishers</span><b>{publishers}</b><small>named in ledger</small></div>
         <div><span>Counterevidence</span><b className="amber">{counterevidence}</b><small>explicitly linked</small></div>
         <div><span>Quality errors</span><b className={qualityErrors ? "amber" : "green"}>{qualityErrors}</b><small>current report</small></div>
@@ -903,7 +903,7 @@ function EvidenceView({ analysis }: { analysis: AnalysisProjection }) {
                 <td>{item.force}</td>
                 <td><span className={`stance ${item.stance.toLowerCase()}`}>{item.stance}</span></td>
                 <td><div className="authority"><ScoreBar score={item.authority} tone={item.authority > 90 ? "green" : "cyan"} compact/><b>{item.authority}</b></div></td>
-                <td><StatusBadge tone={item.status === "Verified" ? "green" : "amber"} dot>{item.status}</StatusBadge></td>
+                <td><StatusBadge tone={item.status === "Captured" ? "green" : "amber"} dot>{item.status}</StatusBadge></td>
                 <td>{item.url && <a href={item.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title}`} className="icon-link"><Icon name="external" size={14}/></a>}</td>
               </tr>
             ))}</tbody>
@@ -915,7 +915,7 @@ function EvidenceView({ analysis }: { analysis: AnalysisProjection }) {
           <div className="provenance-flow">
             <div><span>01</span><Icon name="search" size={18}/><b>Discover</b><small>DDG result</small></div><i>→</i>
             <div><span>02</span><Icon name="download" size={18}/><b>Capture</b><small>underlying page</small></div><i>→</i>
-            <div><span>03</span><Icon name="shield" size={18}/><b>Verify</b><small>publisher + hash</small></div><i>→</i>
+            <div><span>03</span><Icon name="shield" size={18}/><b>Seal</b><small>URL + content hash</small></div><i>→</i>
             <div><span>04</span><Icon name="sources" size={18}/><b>Link</b><small>claim relation</small></div>
           </div>
         </Panel>
@@ -1065,7 +1065,7 @@ function SettingsView({
   const update = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => setSettings({ ...settings, [key]: value });
   return (
     <div className="view-stack">
-      <ViewHeader code="09 / SYSTEM CONTROL" title="Workspace" accent="settings" description="Runtime fields accepted and enforced by the local API for subsequent analyses." actions={<PrimaryButton icon="check" onClick={() => void save()} disabled={saving || apiMode !== "connected"}>{saving ? "Saving…" : "Save configuration"}</PrimaryButton>} />
+      <ViewHeader code="09 / SYSTEM CONTROL" title="Workspace" accent="settings" description="Session-scoped runtime fields accepted and enforced by the local API for subsequent analyses." actions={<PrimaryButton icon="check" onClick={() => void save()} disabled={saving || apiMode !== "connected"}>{saving ? "Applying…" : "Apply to session"}</PrimaryButton>} />
       <div className="settings-layout">
         <div className="settings-stack">
           <Panel eyebrow="LOCAL INFERENCE" title="oMLX model gateway" actions={<StatusBadge tone={apiMode === "connected" ? "green" : "amber"} dot>{apiMode === "connected" ? "Loaded from API" : "API unavailable"}</StatusBadge>}>
@@ -1081,9 +1081,9 @@ function SettingsView({
         </div>
         <aside className="settings-rail">
           <Panel eyebrow="CONNECTION" title="Observed API state">
-            <div className="connection-test"><div><span className={apiMode === "connected" ? "live-pip" : "status-dot"}/><b>{apiMode === "connected" ? "Local API responded" : apiMode === "checking" ? "Checking local API" : "Local API unavailable"}</b><small>{apiMode === "connected" ? "Settings were read from /api/settings" : "Edits cannot be saved until the service responds"}</small></div></div>
+            <div className="connection-test"><div><span className={apiMode === "connected" ? "live-pip" : "status-dot"}/><b>{apiMode === "connected" ? "Local API responded" : apiMode === "checking" ? "Checking local API" : "Local API unavailable"}</b><small>{apiMode === "connected" ? "Settings were read from /api/settings" : "Edits cannot be applied until the service responds"}</small></div></div>
           </Panel>
-          <Panel eyebrow="SAVED FIELDS" title="API contract">
+          <Panel eyebrow="ACTIVE SESSION" title="API contract">
             <dl className="runtime-list"><div><dt>Endpoint</dt><dd>{settings.endpoint}</dd></div><div><dt>Model</dt><dd>{settings.model}</dd></div><div><dt>Search region</dt><dd>{settings.searchRegion}</dd></div><div><dt>Capture limit</dt><dd>{settings.maxSources}</dd></div></dl>
           </Panel>
         </aside>
@@ -1376,10 +1376,10 @@ export function AdvisoryWorkspace() {
         searchRegion: typeof payload.searchRegion === "string" ? payload.searchRegion : settings.searchRegion,
         maxSources: typeof payload.maxSources === "number" || typeof payload.maxSources === "string" ? String(payload.maxSources) : settings.maxSources,
       });
-      notify("Configuration persisted by the local API");
+      notify("Configuration applied to this local API process");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "The configuration could not be saved.";
-      notify(`Configuration not saved · ${message}`);
+      const message = error instanceof Error ? error.message : "The configuration could not be applied.";
+      notify(`Configuration not applied · ${message}`);
     } finally {
       setSavingSettings(false);
     }

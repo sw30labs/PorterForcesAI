@@ -298,7 +298,7 @@ function evidenceProjection(
     authority,
     force: force ? forceMeta[force]?.name ?? titleCase(force) : "Cross-force",
     url,
-    status: text(item.origin) === "public_web" && Boolean(item.content_sha256) ? "Verified" : "Review",
+    status: text(item.origin) === "public_web" && Boolean(item.content_sha256) ? "Captured" : "Review",
   };
 }
 
@@ -375,7 +375,7 @@ export function projectCompletedAnalysis(payload: unknown): AnalysisProjection |
     return evaluations.map((evaluation) => ({
       time: dateLabel(attempt.completed_at, `Attempt ${attemptNumber}`),
       agent: "ralph/evaluator",
-      text: `${text(evaluation.criterion_id, "criterion")} · ${text(evaluation.outcome, "unknown")} · ${text(evaluation.message, "No evaluator message")}`,
+      text: `${text(evaluation.criterion_id, "criterion")} · ${text(evaluation.outcome, "unknown")} · ${text(evaluation.explanation, "No evaluator explanation")}`,
     }));
   });
   const cost = record(details.cost_of_delay);

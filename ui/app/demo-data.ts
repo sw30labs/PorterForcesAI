@@ -40,7 +40,7 @@ export interface EvidenceItem {
   authority: number;
   force: string;
   url: string;
-  status: "Verified" | "Review";
+  status: "Captured" | "Review";
 }
 
 export interface Scenario {
@@ -190,7 +190,7 @@ export const evidence: EvidenceItem[] = [
     authority: 96,
     force: "Supplier power",
     url: "https://www.bankofengland.co.uk/report/2024/artificial-intelligence-in-uk-financial-services-2024",
-    status: "Verified",
+    status: "Captured",
   },
   {
     id: "E-002",
@@ -203,7 +203,7 @@ export const evidence: EvidenceItem[] = [
     authority: 98,
     force: "Supplier power",
     url: "https://finance.ec.europa.eu/regulation-and-supervision/financial-services-legislation/digital-operational-resilience-act_en",
-    status: "Verified",
+    status: "Captured",
   },
   {
     id: "E-003",
@@ -216,7 +216,7 @@ export const evidence: EvidenceItem[] = [
     authority: 82,
     force: "Competitive rivalry",
     url: "https://www.sec.gov/edgar/search/",
-    status: "Verified",
+    status: "Captured",
   },
   {
     id: "E-004",
@@ -229,7 +229,7 @@ export const evidence: EvidenceItem[] = [
     authority: 97,
     force: "Supplier power",
     url: "https://www.federalreserve.gov/newsevents/pressreleases/bcreg20230606a.htm",
-    status: "Verified",
+    status: "Captured",
   },
   {
     id: "E-005",
@@ -268,7 +268,7 @@ export const evidence: EvidenceItem[] = [
     authority: 97,
     force: "Threat of new entrants",
     url: "https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai",
-    status: "Verified",
+    status: "Captured",
   },
   {
     id: "E-008",

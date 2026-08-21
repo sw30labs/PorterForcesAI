@@ -454,8 +454,8 @@ def _run_view(result: AnalysisResult, *, include_details: bool = False) -> dict[
             "Human approval",
         ),
         ApplicationRunStatus.PUBLISHABLE: ("complete", 100, "Publication unlocked"),
-        ApplicationRunStatus.BLOCKED: ("paused", 100, "Ralph blocked"),
-        ApplicationRunStatus.FAILED: ("paused", 100, "Failed"),
+        ApplicationRunStatus.BLOCKED: ("blocked", 100, "Ralph blocked"),
+        ApplicationRunStatus.FAILED: ("failed", 100, "Failed"),
     }
     ui_status, progress, phase = status_map[result.status]
     attempts = result.ralph_state.attempts if result.ralph_state else ()

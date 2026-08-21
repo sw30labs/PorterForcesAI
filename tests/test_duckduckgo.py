@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
@@ -8,6 +10,46 @@ from porter_forces_ai.adapters.duckduckgo import (
 )
 from porter_forces_ai.domain import ResearchQuery
 from porter_forces_ai.egress import EgressPolicy, EgressViolation
+
+_EMPTY_SEARCH_HTML = """
+<!doctype html>
+<html><body><p class="no-results">No results.</p></body></html>
+"""
+_RESULT_SEARCH_HTML = """
+<!doctype html>
+<html><body>
+  <div class="body">
+    <h2>Public report</h2>
+    <a href="https://example.org/public-report">Public discovery text</a>
+  </div>
+</body></html>
+"""
+
+
+class FakeHTTPResponse:
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+class FakeRawHTTPClient:
+    def __init__(
+        self,
+        responses: list[FakeHTTPResponse] | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.responses = list(responses or [])
+        self.error = error
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def request(self, *args: object, **kwargs: object) -> FakeHTTPResponse:
+        self.calls.append((args, kwargs))
+        if self.error is not None:
+            raise self.error
+        if not self.responses:
+            raise AssertionError("unexpected DuckDuckGo HTTP request")
+        return self.responses.pop(0)
 
 
 class FakeClient:
@@ -105,23 +147,12 @@ def test_adapter_skips_an_unsafe_result_without_losing_safe_results() -> None:
 
 
 def test_adapter_retries_no_results_without_recency_on_same_backend() -> None:
-    class FilterSensitiveClient:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        def text(self, **kwargs: object) -> list[dict[str, str]]:
-            self.calls.append(kwargs)
-            if kwargs["timelimit"] == "y":
-                raise DDGSException("No results found.")
-            return [
-                {
-                    "title": "Public report",
-                    "href": "https://example.org/public-report",
-                    "body": "Public discovery text",
-                }
-            ]
-
-    client = FilterSensitiveClient()
+    client = FakeRawHTTPClient(
+        [
+            FakeHTTPResponse(200, _EMPTY_SEARCH_HTML),
+            FakeHTTPResponse(200, _RESULT_SEARCH_HTML),
+        ]
+    )
     request = ResearchQuery(
         query_id="Q-recency",
         query="generative AI adoption global banks 2024 2025 investment",
@@ -132,23 +163,30 @@ def test_adapter_retries_no_results_without_recency_on_same_backend() -> None:
 
     hits = provider.search(request)
 
-    assert [call["timelimit"] for call in client.calls] == ["y", None]
-    assert all(call["backend"] == "duckduckgo" for call in client.calls)
-    assert all(call["query"] == request.query for call in client.calls)
+    assert len(client.calls) == 2
+    assert [call[0][:2] for call in client.calls] == [
+        ("POST", "https://html.duckduckgo.com/html/"),
+        ("POST", "https://html.duckduckgo.com/html/"),
+    ]
+    first_payload = client.calls[0][1]["data"]
+    second_payload = client.calls[1][1]["data"]
+    assert isinstance(first_payload, dict)
+    assert isinstance(second_payload, dict)
+    assert first_payload["df"] == "y"
+    assert "df" not in second_payload
+    assert first_payload["q"] == request.query
+    assert second_payload["q"] == request.query
     assert request.recency is None
     assert [hit.query_id for hit in hits] == ["Q-recency"]
 
 
 def test_adapter_returns_empty_when_unfiltered_retry_has_no_results() -> None:
-    class EmptyClient:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        def text(self, **kwargs: object) -> list[dict[str, str]]:
-            self.calls.append(kwargs)
-            raise DDGSException("No results found.")
-
-    client = EmptyClient()
+    client = FakeRawHTTPClient(
+        [
+            FakeHTTPResponse(200, _EMPTY_SEARCH_HTML),
+            FakeHTTPResponse(200, _EMPTY_SEARCH_HTML),
+        ]
+    )
     request = ResearchQuery(
         query_id="Q-empty-fallback",
         query="fintech acquires bank charter 2024 2025",
@@ -158,18 +196,122 @@ def test_adapter_returns_empty_when_unfiltered_retry_has_no_results() -> None:
     provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
 
     assert provider.search(request) == []
-    assert [call["timelimit"] for call in client.calls] == ["y", None]
+    assert len(client.calls) == 2
     assert request.recency is None
 
 
 def test_adapter_returns_empty_for_unfiltered_no_results() -> None:
-    class EmptyClient:
-        def text(self, **_: object) -> list[dict[str, str]]:
-            raise DDGSException("No results found")
-
-    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: EmptyClient())
+    client = FakeRawHTTPClient([FakeHTTPResponse(200, _EMPTY_SEARCH_HTML)])
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
 
     assert provider.search("narrow public evidence query") == []
+    assert len(client.calls) == 1
+
+
+def test_ambiguous_ddgs_no_results_sentinel_fails_closed() -> None:
+    sentinel = DDGSException("No results found.")
+
+    class AmbiguousClient:
+        def text(self, **_: object) -> list[dict[str, str]]:
+            raise sentinel
+
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: AmbiguousClient())
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search("narrow public evidence query")
+
+    assert raised.value.__cause__ is sentinel
+
+
+@pytest.mark.parametrize("status_code", [202, 403, 429, 500, 503])
+def test_non_200_duckduckgo_responses_fail_closed_without_body_leak(
+    status_code: int,
+) -> None:
+    sensitive_body = "challenge-content-that-must-not-escape"
+    client = FakeRawHTTPClient([FakeHTTPResponse(status_code, sensitive_body)])
+    request = ResearchQuery(
+        query_id="Q-http-failure",
+        query="banking AI competition official report",
+        rationale="Find recent external pressure",
+        recency="y",
+    )
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search(request)
+
+    assert len(client.calls) == 1
+    assert request.recency == "y"
+    rendered_error = f"{raised.value} {raised.value.__cause__}"
+    assert str(status_code) in rendered_error
+    assert sensitive_body not in rendered_error
+
+
+def test_http_200_challenge_page_fails_closed_without_body_leak() -> None:
+    sensitive_body = (
+        '<html><form id="challenge-form">private challenge token</form></html>'
+    )
+    client = FakeRawHTTPClient([FakeHTTPResponse(200, sensitive_body)])
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search("banking AI competition official report")
+
+    rendered_error = f"{raised.value} {raised.value.__cause__}"
+    assert "challenge response" in rendered_error
+    assert "private challenge token" not in rendered_error
+
+
+@pytest.mark.parametrize(
+    "unrecognized_html",
+    [
+        "<html><body><p>No results.</p></body></html>",
+        (
+            '<html><body><div class="new-result-layout">'
+            '<a href="https://example.org/report">changed layout</a>'
+            "</div></body></html>"
+        ),
+        '<html><body><div class="body"><h2>Maintenance</h2></div></body></html>',
+    ],
+)
+def test_http_200_without_result_or_explicit_empty_marker_fails_closed(
+    unrecognized_html: str,
+) -> None:
+    client = FakeRawHTTPClient([FakeHTTPResponse(200, unrecognized_html)])
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search("banking AI competition official report")
+
+    rendered_error = f"{raised.value} {raised.value.__cause__}"
+    assert "not a recognized results page" in rendered_error
+    assert unrecognized_html not in rendered_error
+
+
+def test_raw_transport_timeout_fails_closed() -> None:
+    timeout = TimeoutException("timed out")
+    client = FakeRawHTTPClient(error=timeout)
+    provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+    with pytest.raises(SearchUnavailableError) as raised:
+        provider.search("banking AI competition official report")
+
+    assert raised.value.__cause__ is timeout
+    assert len(client.calls) == 1
+
+
+def test_async_search_uses_the_same_status_aware_boundary() -> None:
+    async def scenario() -> None:
+        client = FakeRawHTTPClient([FakeHTTPResponse(403, "do-not-leak-this-body")])
+        provider = DuckDuckGoSearchProvider(client_factory=lambda **_: client)
+
+        with pytest.raises(SearchUnavailableError) as raised:
+            await provider.asearch("banking AI competition official report")
+
+        assert "do-not-leak-this-body" not in str(raised.value.__cause__)
+        assert len(client.calls) == 1
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -214,7 +356,7 @@ def test_adapter_reports_unfiltered_retry_failure_without_rewriting_request() ->
         def text(self, **kwargs: object) -> list[dict[str, str]]:
             self.calls.append(kwargs)
             if len(self.calls) == 1:
-                raise DDGSException("No results found.")
+                return []
             raise fallback_error
 
     client = FailingFallbackClient()

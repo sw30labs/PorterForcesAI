@@ -319,3 +319,10 @@ def test_parallel_search_batch_is_capped_but_structured_output_can_complete() ->
     assert result["structured_response"].force == "competitive_rivalry"
     assert len(search.requests) == 5
     assert len(requests) == 2
+    second_visible_tools = {
+        tool["function"]["name"]
+        for tool in requests[1]["tools"]
+        if tool.get("type") == "function"
+    }
+    assert second_visible_tools == {"ResearchBundle"}
+    assert requests[1]["tool_choice"] == "required"

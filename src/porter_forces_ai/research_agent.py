@@ -17,7 +17,7 @@ Analyze exactly one assigned Porter force. First state causal hypotheses in the
 form driver -> force effect -> economic mechanism -> organization exposure ->
 observable signal. Use the public-search tool only for sanitized public queries.
 
-Issue exactly one parallel search batch containing no more than five focused
+Issue exactly one parallel search batch containing three to five distinct focused
 queries. After that batch returns, do not search again: immediately synthesize
 the ResearchBundle from the observed results. An empty result is a valid finding;
 record the gap instead of broadening or repeating the query.
@@ -74,6 +74,54 @@ def _research_tool_boundary_middleware() -> Any:
             return response
 
     return ResearchToolBoundaryMiddleware()
+
+
+def _single_search_batch_middleware() -> Any:
+    """After one completed search batch, force the typed final response.
+
+    The tool-call limiter is the hard network cap. This middleware removes the
+    search schema after any successful search result and forces the remaining
+    ``ResearchBundle`` tool, preventing a compliant model from spending local
+    inference calls asking to broaden the same assignment.
+    """
+
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    def final_request(request: Any) -> Any:
+        completed_search = any(
+            isinstance(message, ToolMessage)
+            and message.name == "search_public_web"
+            and message.status != "error"
+            for message in request.messages
+        )
+        if not completed_search:
+            return request
+        if request.response_format is None:
+            raise ResearchAgentPolicyError(
+                "structured research output disappeared after the search batch"
+            )
+        # Structured-output tools live in ``response_format`` and LangChain adds
+        # them after middleware returns. Removing the sole executable search
+        # tool therefore leaves exactly ResearchBundle and makes it mandatory.
+        return request.override(tools=[])
+
+    class SingleSearchBatchMiddleware(AgentMiddleware[Any, Any, Any]):
+        def wrap_model_call(
+            self,
+            request: Any,
+            handler: Callable[[Any], Any],
+        ) -> Any:
+            return handler(final_request(request))
+
+        async def awrap_model_call(
+            self,
+            request: Any,
+            handler: Callable[[Any], Awaitable[Any]],
+        ) -> Any:
+            return await handler(final_request(request))
+
+    return SingleSearchBatchMiddleware()
 
 
 def _register_restricted_harness(model: Any) -> None:
@@ -154,6 +202,7 @@ def create_force_research_agent(
             # limit errors back so the model can still emit ResearchBundle.
             exit_behavior="continue",
         ),
+        _single_search_batch_middleware(),
         _research_tool_boundary_middleware(),
     ]
 

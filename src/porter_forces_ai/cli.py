@@ -316,14 +316,20 @@ def serve(
 
     import uvicorn
 
+    from porter_forces_ai.repository import RepositoryWriterLeaseConflictError
+
     settings = Settings()
-    uvicorn.run(
-        "porter_forces_ai.web:create_app",
-        factory=True,
-        host=settings.api_host,
-        port=settings.api_port,
-        reload=reload,
-    )
+    try:
+        uvicorn.run(
+            "porter_forces_ai.web:create_app",
+            factory=True,
+            host=settings.api_host,
+            port=settings.api_port,
+            reload=reload,
+        )
+    except RepositoryWriterLeaseConflictError as exc:
+        typer.echo(f"FAILED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 def _emit_result(result: object, *, as_json: bool) -> None:

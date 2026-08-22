@@ -1,6 +1,6 @@
 {
   "name": "porter-forces-ai-console",
-  "version": "0.1.0",
+  "version": "0.1.0-beta",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
+    "playwright": "^1.62.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

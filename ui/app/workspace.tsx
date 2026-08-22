@@ -16,6 +16,7 @@ import {
   type ViewId,
 } from "./demo-data";
 import {
+  formatUtcDate,
   illustrativeProjection,
   projectApprovals,
   projectCompletedAnalysis,
@@ -429,7 +430,7 @@ function remoteRunState(payload: unknown, previous: RunState): RunState | null {
     current: typeof candidate.current_phase === "string" ? candidate.current_phase : currentPhase(progress).label,
     status,
     started: startedAt && !Number.isNaN(startedAt.valueOf())
-      ? startedAt.toLocaleTimeString("en-US", { hour12: false })
+      ? startedAt.toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })
       : previous.started,
     iteration: typeof candidate.iteration === "number" ? candidate.iteration : previous.iteration,
     maxIterations: typeof candidate.max_iterations === "number" && candidate.max_iterations > 0
@@ -514,7 +515,7 @@ function OverviewView({
 
       <div className="signal-strip">
         <div><span className="live-pip" /> <b>{analysis.runId ?? "WALKTHROUGH"}</b> · {run.current}</div>
-        <span>Analysis as of · {new Date(analysis.boardBrief.asOf).toLocaleDateString()}</span>
+        <span>Analysis as of · {formatUtcDate(analysis.boardBrief.asOf)}</span>
         <span>Model · {analysis.model}</span>
         <button type="button" onClick={() => navigate("run")}>Open Ralph monitor <Icon name="arrow" size={13}/></button>
       </div>
@@ -972,10 +973,10 @@ function BoardBriefView({ analysis }: { analysis: AnalysisProjection }) {
   return (
     <div className="view-stack">
       <ViewHeader code="07 / BOARD PRODUCT" title="Board decision" accent="brief" description="One decision, the economic logic, the strongest countercase, and the questions directors must resolve." actions={analysis.artifactUrls.board_memo ? <a className="button secondary" href={analysis.artifactUrls.board_memo}><Icon name="download" size={15}/>Export memo</a> : <StatusBadge>Memo unavailable</StatusBadge>} />
-      <div className="brief-status-strip"><StatusBadge tone={analysis.quality.publishable ? "green" : "amber"} dot>{analysis.quality.publishable ? "Publication unlocked" : "Draft · publication locked"}</StatusBadge><span>Run · <b>{analysis.runId ?? "illustrative"}</b></span><span>As of · {new Date(brief.asOf).toLocaleDateString()}</span><span>{pending} approvals outstanding</span></div>
+      <div className="brief-status-strip"><StatusBadge tone={analysis.quality.publishable ? "green" : "amber"} dot>{analysis.quality.publishable ? "Publication unlocked" : "Draft · publication locked"}</StatusBadge><span>Run · <b>{analysis.runId ?? "illustrative"}</b></span><span>As of · {formatUtcDate(brief.asOf)}</span><span>{pending} approvals outstanding</span></div>
       <article className="board-paper">
         <header className="paper-header"><div><BrandMark/><span>PORTER FORCES AI</span></div><p>BOARD DECISION MEMORANDUM <b>CONFIDENTIAL</b></p></header>
-        <div className="paper-title"><span>DECISION · {new Date(brief.asOf).toLocaleDateString()}</span><h2>{analysis.question}</h2><p>{analysis.organization} · {analysis.horizon} · {analysis.marketBoundary}</p></div>
+        <div className="paper-title"><span>DECISION · {formatUtcDate(brief.asOf)}</span><h2>{analysis.question}</h2><p>{analysis.organization} · {analysis.horizon} · {analysis.marketBoundary}</p></div>
         <section className="ask-box"><span>THE ASK</span><h3>{brief.decisionRequested}</h3><p>{brief.recommendation}</p></section>
         <div className="paper-columns">
           <section><span className="paper-label">WHY NOW</span><ul className="brief-bullets">{brief.whyNow.map((point) => <li key={point}>{point}</li>)}</ul></section>
@@ -1435,7 +1436,7 @@ export function AdvisoryWorkspace() {
             <ScoreBar score={run.progress} tone="cyan" compact/>
             <small>{run.current}</small>
           </div>
-          <footer><span>LANGGRAPH · DEEP AGENTS</span><span>oMLX LOCAL INFERENCE</span><span>CONTROLLED EGRESS</span><b>v0.1.0 · LOCAL MVP</b></footer>
+          <footer><span>LANGGRAPH · DEEP AGENTS</span><span>oMLX LOCAL INFERENCE</span><span>CONTROLLED EGRESS</span><b>v0.1.0-beta</b></footer>
         </aside>
         <main className="main-content" id="main-content">
           {analysis.origin === "illustrative" && <div className="trust-banner"><Icon name="alert" size={16}/><div><b>ILLUSTRATIVE WORKSPACE</b><span>No completed backend analysis is loaded. Every claim, source, score, approval, and financial value below is demonstration data.</span></div></div>}

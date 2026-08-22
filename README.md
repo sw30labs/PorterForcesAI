@@ -1,5 +1,7 @@
 # PorterForcesAI
 
+**Release:** 0.1 beta.
+
 PorterForcesAI is a local, evidence-led decision toolkit for AI engineers,
 architects, and technical strategists advising financial-services boards. It
 turns a strategic question into a Porter Five Forces analysis, a traceable
@@ -227,6 +229,11 @@ make test
 The Python suite is offline by default. Live oMLX and DuckDuckGo checks are
 explicit so routine CI cannot accidentally cause egress or depend on changing
 external pages.
+
+## Guides
+
+- [What is PorterForcesAI?](WHAT-IS-PF-AI.md) — plain-language, code-grounded deep dive.
+- [Quickstart](QUICKSTART.md) — CLI commands, payload fields, and example JSON.
 
 ## Documentation
 

@@ -67,6 +67,8 @@ test("removes starter artifacts and declares the local API contract", async () =
   assert.doesNotMatch(workspace, /paused|Pause|Resume/);
   assert.doesNotMatch(workspace, /local_inference\s*:/);
   assert.doesNotMatch(workspace, /counterevidence\s*:/);
+  assert.doesNotMatch(workspace, /toLocaleDateString\(/);
+  assert.match(workspace, /formatUtcDate\(/);
   assert.match(viteConfig, /host:\s*["']127\.0\.0\.1["']/);
   assert.match(viteConfig, /http:\/\/127\.0\.0\.1:8765/);
   await assert.rejects(access(new URL("../app/_sites-preview/", import.meta.url)));

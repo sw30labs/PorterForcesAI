@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { projectCompletedAnalysis } from "../app/analysis-projection.ts";
+import { formatUtcDate, projectCompletedAnalysis } from "../app/analysis-projection.ts";
 import { canonicalScenario } from "../app/intake-contract.ts";
 
 const forceNames = [
@@ -89,6 +89,12 @@ function completedPayload({ approvals = [] } = {}) {
   };
 }
 
+test("formats as-of timestamps in UTC so SSR and the browser agree", () => {
+  assert.equal(formatUtcDate("2026-08-18T00:00:00Z"), "8/18/2026");
+  assert.equal(formatUtcDate("2026-08-18T07:00:00Z"), "8/18/2026");
+  assert.equal(formatUtcDate("not-a-date"), "not-a-date");
+});
+
 test("projects a completed canonical response without fixture substitution", () => {
   const result = projectCompletedAnalysis(completedPayload());
   assert.ok(result);
@@ -98,6 +104,8 @@ test("projects a completed canonical response without fixture substitution", () 
   assert.equal(result.forces[0].evidenceFor, "Captured evidence supports the entry thesis.");
   assert.equal(result.evidence[0].authority, 54);
   assert.equal(result.evidence[0].status, "Captured");
+  assert.equal(result.evidence[0].published, "Jun 01, 2026");
+  assert.equal(result.evidence[0].captured, "Aug 20, 2026");
   assert.equal(result.scenarios[0].npvBase, 20);
   assert.equal(result.scenarios[0].unitLabel, "USD");
   assert.deepEqual(result.artifactUrls, {

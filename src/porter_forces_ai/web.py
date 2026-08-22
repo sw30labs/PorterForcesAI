@@ -164,7 +164,7 @@ def create_app(
 
     app = FastAPI(
         title="PorterForcesAI local API",
-        version="0.1.0",
+        version="0.1.0-beta",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         redoc_url=None,

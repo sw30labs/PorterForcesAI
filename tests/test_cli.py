@@ -150,6 +150,32 @@ def test_analysis_cli_reports_writer_lease_conflict_without_traceback(
     assert "Traceback" not in result.output
 
 
+def test_serve_reports_writer_lease_conflict_without_traceback(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_PATH", str(tmp_path / "owned-serve.db"))
+    monkeypatch.setenv("PFA_API_PORT", "8765")
+
+    def load_factory(*_args: Any, **_kwargs: Any) -> None:
+        from porter_forces_ai.web import create_app
+
+        create_app()
+
+    monkeypatch.setattr("uvicorn.run", load_factory)
+    writer = AnalysisService(Settings())
+    try:
+        result = runner.invoke(app, ["serve"])
+    finally:
+        writer.close()
+
+    assert result.exit_code == 1
+    assert "FAILED:" in result.output
+    assert "writer lease" in result.output
+    assert result.exception is not None
+    assert "Traceback" not in result.output
+
+
 def test_help_exposes_runtime_commands() -> None:
     result = runner.invoke(app, ["--help"])
 

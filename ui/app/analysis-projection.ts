@@ -167,11 +167,23 @@ function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+export function formatUtcDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  }).format(parsed);
+}
+
 function dateLabel(value: unknown, fallback = "Not supplied"): string {
   if (typeof value !== "string" || !value) return fallback;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf())) return value;
   return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
     year: "numeric",
     month: "short",
     day: "2-digit",

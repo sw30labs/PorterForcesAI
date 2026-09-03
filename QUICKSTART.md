@@ -67,7 +67,7 @@ uv run porter-forces analyze examples/global-bank-ai-adoption.live.json
 
 ```bash
 uv run porter-forces runs            # list persisted runs
-uv run porter-forces run --json      # machine-readable
+uv run porter-forces runs --json     # machine-readable
 uv run porter-forces show <run-id>   # hydrate one run's complete result
 uv run porter-forces show <run-id> --json
 ```

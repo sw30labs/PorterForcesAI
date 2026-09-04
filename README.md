@@ -71,6 +71,12 @@ To exercise the complete system without a model or network:
 uv run porter-forces run examples/global-bank-ai-adoption.demo.json
 ```
 
+To run the live analysis with a local oMLX server:
+
+```bash
+uv run porter-forces analyze examples/global-bank-ai-adoption.live.json
+```
+
 The example includes illustrative, explicitly owned scenario ranges so the
 deterministic ROI and cost-of-delay paths are exercised before synthesis and by
 Ralph's acceptance criteria. Artifacts are written under `runs/<run-id>/`; the

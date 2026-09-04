@@ -36,6 +36,14 @@ Runs the entire pipeline with labeled synthetic evidence.
 uv run porter-forces run examples/global-bank-ai-adoption.demo.json
 ```
 
+## 3. Live analysis (local oMLX + DuckDuckGo)
+
+```bash
+uv run porter-forces analyze examples/global-bank-ai-adoption.live.json
+```
+
+`analyze` **always forces live mode** (it rewrites the declared mode). For a run that *respects* the mode declared in the file, use `run` instead. The live example uses `"mode": "live"`, `"target": "draft"`.
+
 Expected:
 
 ```

@@ -80,8 +80,10 @@ def test_all_referenced_local_paths_exist(doc_name: str) -> None:
 
 def test_porter_forces_help_exits_zero() -> None:
     """Assert `uv run porter-forces --help` exits with code 0."""
+    uv_path = shutil.which("uv")
+    assert uv_path is not None, "uv executable not found on PATH"
     result = subprocess.run(
-        [sys.executable, "-m", "uv", "run", "porter-forces", "--help"],
+        [uv_path, "run", "porter-forces", "--help"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

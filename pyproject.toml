@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 authors = [{ name = "PorterForcesAI contributors" }]
 dependencies = [
   "ddgs==9.15.0",
-  "deepagents>=0.7.8,<1",
+  "deepagents>=0.7.13,<1",
   "fastapi>=0.116,<1",
   "httpcore>=1.0,<2",
   "httpx>=0.28,<1",

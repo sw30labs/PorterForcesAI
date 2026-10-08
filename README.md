@@ -254,3 +254,7 @@ external pages.
 - [Release validation](docs/technical/release-validation.md)
 - [Architecture decisions](docs/technical/adr/README.md)
 - [Product blueprint](docs/PROJECT_BLUEPRINT.md)
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
